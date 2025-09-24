@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project artifacts
+data/
+reports/
+.env
+secrets*.json
