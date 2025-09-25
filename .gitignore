@@ -11,7 +11,4 @@ __pycache__/
 Thumbs.db
 
 # Project artifacts
-data/
-reports/
 .env
-secrets*.json

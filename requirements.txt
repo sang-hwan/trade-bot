@@ -1,4 +1,6 @@
+# core
 pandas>=2.2
-numpy>=1.26
-matplotlib>=3.8
 yfinance>=0.2
+
+# parquet writer used by load_ohlcv.py (df.to_parquet)
+pyarrow>=14
