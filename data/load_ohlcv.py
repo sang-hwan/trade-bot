@@ -67,7 +67,7 @@ def load_ohlcv(tickers: list[str], start: str, end: str, interval: str) -> pd.Da
         df.index = df.index.tz_convert("UTC")
     df = df[~df.index.duplicated(keep="first")].sort_index().dropna(how="all")
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ["{}_{}".format(a, b) for a, b in df.columns]
+        df.columns = [f"{b}_{str(a).replace(' ', '_')}" for a, b in df.columns]
     return df
 
 def main():
