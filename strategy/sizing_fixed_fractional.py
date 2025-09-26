@@ -68,20 +68,20 @@ def floor_to_step(q: float, step: float) -> float:
 def qty_stock_coin_ff(E: float, f: float, entry: float, prev_low: float, *, lot_step: float = 1.0) -> float:
     R = risk_budget(E, f)
     D = stop_distance_from_prev_low(entry, prev_low)
-    Q = math.floor(R / D)
-    return floor_to_step(Q, lot_step)
+    Q_raw = R / D
+    return floor_to_step(Q_raw, lot_step)
 
 def qty_futures_ff(E: float, f: float, entry: float, prev_low: float, V: float, *, lot_step: float = 1.0) -> float:
     if V <= 0:
         raise ValueError("V>0 required")
     R = risk_budget(E, f)
     D = stop_distance_from_prev_low(entry, prev_low)
-    Q = math.floor(R / (D * V))
-    return floor_to_step(Q, lot_step)
+    Q_raw = R / (D * V)
+    return floor_to_step(Q_raw, lot_step)
 
 def qty_fx_ff(E: float, f: float, D_pips: float, PV: float, *, lot_step: float = 1.0) -> float:
     if E <= 0 or f <= 0 or D_pips <= 0 or PV <= 0:
         raise ValueError("E,f,D_pips,PV must be > 0")
     R = risk_budget(E, f)
-    Q = math.floor(R / (float(D_pips) * float(PV)))
-    return floor_to_step(Q, lot_step)
+    Q_raw = R / (float(D_pips) * float(PV))
+    return floor_to_step(Q_raw, lot_step)
