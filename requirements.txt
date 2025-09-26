@@ -1,6 +1,0 @@
-# core
-pandas>=2.2
-yfinance>=0.2
-
-# parquet writer used by load_ohlcv.py (df.to_parquet)
-pyarrow>=14
