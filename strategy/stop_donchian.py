@@ -1,27 +1,30 @@
 """
 이 파일의 목적:
-- Donchian 채널 N-일 최저가 기반 롱 포지션 보호 스탑을 룩어헤드 없이 계산/스트리밍합니다.
+- Donchian 채널 N-일 최저가를 이용해 전일 기준 임계값 L_N(t-1)과 롱 포지션 스탑 트리거를 룩어헤드 없이 배치/스트리밍으로 산출합니다.
 
 사용되는 변수와 함수 목록:
+- 변수
+  - 없음
+
 - 함수
-  - donchian_prev_low(lows, n): 전일 기준 임계값 L_N(t-1) 시퀀스 생성
-    - 입력값: lows(list[float]), n(int>0)
-    - 출력값: list[float|None] — 각 t에서의 L_N(t-1), 초기 n구간은 None
-  - donchian_stop_hits(lows, n): 스탑 트리거 여부 시퀀스
-    - 입력값: lows(list[float]), n(int>0)
-    - 출력값: list[bool] — t에서 L_t ≤ L_N(t-1) 여부
-- 클래스
+  - donchian_prev_low(lows, n): 전일 기준 임계값 L_N(t-1) 시퀀스 생성(모노토닉 덱 사용)
+    - 입력값: lows(iterable[float]) — 각 시점의 저가, n(int>0) — 윈도 길이
+    - 출력값: list[float|None] — 각 t에서의 L_N(t-1); 초기 n 구간은 None
+
+  - donchian_stop_hits(lows, n): 스탑 트리거 여부 시퀀스 계산
+    - 입력값: lows(iterable[float]), n(int>0)
+    - 출력값: list[bool] — 각 t에서 (low_t ≤ L_N(t-1))인지의 True/False
+
   - DonchianStopLong(n): 스트리밍 스탑 엔진(롱 기준)
     - 입력값: n(int>0)
-    - 메서드:
-      - on_bar_open() -> float|None — 현재 t에서 사용할 임계값 L_N(t-1)
-      - on_bar_close(low: float) -> bool — t에서 스탑 트리거 발생 여부
-    - 속성:
-      - prev_low -> float|None — 최근 on_bar_open 시점의 임계값
+    - 출력값:
+        - prev_low [property] -> float|None — 현재 시점에서 **다음 봉 오픈에 적용될** L_N(t-1)
+        - on_bar_open() -> float|None — 현재 봉 오픈에서 적용할 L_N(t-1) 반환
+        - on_bar_close(low: float) -> bool — 저가로 내부 상태 갱신 및 (low ≤ L_N(t-1)) 트리거 판정
 
 파일의 흐름(→):
-- (배치) donchian_prev_low() → donchian_stop_hits()
-- (스트리밍) on_bar_open() → on_bar_close(low)
+- (스트리밍) on_bar_open()으로 L_N(t-1) 확인 → on_bar_close(low)로 모노토닉 덱 갱신 및 트리거 판정 → … 반복
+- (배치) donchian_prev_low(lows, n)로 L_N(t-1) 시퀀스 생성 → donchian_stop_hits(lows, n)로 트리거 시퀀스 생성
 """
 
 from collections import deque
@@ -82,7 +85,7 @@ class DonchianStopLong:
         while self._dq and self._dq[-1][1] >= low:
             self._dq.pop()
         self._dq.append((i, low))
-        while self._dq and self._dq[0][0] <= i - (self.n - 1):
+        while self._dq and self._dq[0][0] <= i - self.n:
             self._dq.popleft()
         self._count += 1
         return hit
