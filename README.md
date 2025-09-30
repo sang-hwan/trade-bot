@@ -1,204 +1,200 @@
 # 목표
 
-데이터 → 전략 → 시뮬레이션 → 검증
+데이터[수집 → 정합성 → 완전 조정 → 스냅샷 고정] → 전략[피처 → 신호·스탑 → 사이징] → 시뮬레이션[타임라인 집행 · 비용 반영 → 산출물 고정] → 검증·리포팅[워크포워드 · 민감도 · 시각화]
 
-> 이 문서는 백테스트 파이프라인을 위 순서로 정리해 **실행·재현성·비용 반영**을 일관되게 유지합니다.
+> 위 순서를 기준으로 **SSOT(역할 단일화)** 를 준수하고, **룩어헤드 금지**, **Stop > Signal** 우선, `*_adj` **우선 사용**을 기본 계약으로 하여 **실행·재현성·비용 반영**을 일관되게 유지한다.
 
 ---
 
 ## 아키텍처 원칙(SSOT)
-- 데이터 정합화는 데이터 단계에만, 특징 생성·의사결정은 전략 단계에만, 타임라인·체결·비용·우선순위는 시뮬레이션 단계에만 구현한다.
+- 데이터 정합화는 **데이터 단계**에만, 특징 생성·의사결정은 **전략 단계**에만, 타임라인·체결·비용·우선순위는 **시뮬레이션 단계**에만 구현한다.
 - 동일 규칙의 중복 구현을 금지한다.
 
 ---
 
 ## 표기 원칙(일관성)
-- 용어: “**특징**(feature)”, “**의사결정**(decision)”, “**스냅샷 메타**(snapshot meta)”
-- 조정가 사용: `*_adj` 컬럼이 존재하면 **항상 사용**, 없으면 원시 컬럼을 사용(혼용 금지)
-- 기호: $O,H,L,C,\ \mathrm{AdjClose}$ 는 각각 시가·고가·저가·종가·조정종가
-- 시계열 표기: 시점 $t$ 의 값은 하첨자(예: $L_t$), Donchian 기준선은 $ \mathrm{prev\_low}_N(t) $
+- 용어: **특징(feature)**, **의사결정(decision)**, **스냅샷 메타(snapshot meta)**.
+- 조정가: `*_adj` 컬럼이 존재하면 **항상 우선 사용**(혼용 금지).
+- 기호 매핑: $O \to \texttt{open}$, $H \to \texttt{high}$, $L \to \texttt{low}$, $C \to \texttt{close}$, $\mathrm{AdjClose} \to \texttt{AdjClose}$.
+- 시계열 표기:
+  - 시점 $t$ 값은 하첨자(예: $L_t$).
+  - Donchian 기준선(수식 맥락): **문서 전반을 $\mathrm{prev\_low}_N$으로 통일**(다른 표기 사용 금지).
+  - **제목/문장 속 기호:** “Donchian 이전 N-저가”처럼 **평문 N** 권장(수식은 수식 블록 안에서만).
+- 수식 표기:
+  - **디스플레이 수식:** `$$ ... $$` **만 사용**(`\[...\]` 전면 금지), **앞뒤에 빈 줄 1줄**씩 둔다.
+  - **인라인 수식:** `$ ... $` 유지, **볼드/링크와는 반드시 공백 분리**.
+  - **집합/연산자:** 수식 내부에서 `\{ \}`, `\le`, `\ge`, `\in` 등 LaTeX 명령 사용.
+  - **절댓값:** `\lvert x \rvert` 권장(파이프 `|x|` 사용 금지).
+  - **piecewise:** 리스트/표 내부일수록 **`$$` 블록 + 앞뒤 빈 줄**로 표기.
+- 텍스트 변수명/컬럼명:
+  - 언더스코어 포함 이름은 **코드스팬**으로 표기: `` `stop_level` ``, `` `Q_exec` ``.
+  - **혼용 금지:** 코드스팬 안에 LaTeX 수식을 넣지 않는다(수식은 `$...$` 또는 `$$...$$`에서만).
+  - **수식 내부 변수처럼 보이는 텍스트**는 `\texttt{stop\_level}` 또는 `\text{stop\_level}`로 표기(언더스코어는 `\_`).
 
 ---
 
 ## 코드 작성 시 주의점
-1. 표준 라이브러리 **우선 사용**
-2. **코드 청소**: 동작·출력·공개 API는 그대로 유지한 채, 미사용 import/변수/함수, 주석 처리된 코드, 임시 디버그 출력, 죽은/불필요 분기, 광범위 예외(pass) 등 불필요 요소 일괄 제거
+1. 표준 라이브러리 **우선 사용**.
+2. **코드 청소**: 동작·출력·공개 API는 유지한 채 미사용 import/변수/함수, 주석 처리된 코드, 임시 디버그 출력, 죽은/불필요 분기, 광범위 예외(pass) 제거.
+3. **주석 가이드**: 공개 API 계약, 수식/타이밍 규약, 예외 처리 근거에 한해 **간결하게** 사용(중복·잡설 금지).
 
 ---
 
 ## 1) 데이터
 
 ### 역할
-- 원천 데이터의 **수집·정규화·품질 보증·완전 조정(Adj)·스냅샷 고정**만 담당한다.
-- **전략용 특징(SMA, Donchian $L_N$) 생성**이나 **의사결정(신호·스탑·사이징) 로직**은 포함하지 않는다.
-- 출력은 **정합화된 시계열 스냅샷(DataFrame)** 과 **스냅샷 메타**로 한정한다.
+- **데이터 [수집 → 정합성 → 완전 조정 → 스냅샷 고정]** 만 담당한다.
+- 전략용 **특징·의사결정(신호·스탑·사이징)** 로직은 포함하지 않는다.
+- 출력은 **정합화된 시계열 스냅샷(DataFrame)** + **스냅샷 메타**로 한정한다.
 
-### (공통) 기본 데이터 & 품질 체크
-- **단일 타임존·시간순 정렬**: UTC 인덱스, 단조증가, 중복 인덱스 제거, 음수 시간 간격 금지
-- **결측/중복 제거 & 거래 달력 정합**: 휴장·주말 필터; 가격 보간 지양(필요 시 제거)
-- **필수 컬럼**: `open, high, low, close`(양수), 체결 정책을 위해 **`open` 필수**
-- **바 무결성**: `low ≤ min(open, close, high) ≤ high`
-- **완전 조정 OHLC 권장**  
-  보정계수
-  $$
-  a_t=\frac{\mathrm{AdjClose}_t}{\mathrm{Close}_t}
-  $$
-  에 대해
-  $$
-  X^{\mathrm{adj}}_t = X_t \cdot a_t,\quad X\in\{O,H,L,C\}
-  $$
-  산출 컬럼: `open_adj, high_adj, low_adj, close_adj`(가능 시), 혼용 금지
-- **비용·체결 메타(참조값)**: 수수료율·슬리피지율·호가/로트 단위·포인트/핍 가치는 **참조 상수로 저장만** 하고 계산은 하지 않는다.
+### 수집
+- 원천: 야후 / 트레이딩뷰 / 업비트 등 CSV·API.
+- 인덱스: `DatetimeIndex[UTC]` 로 변환(타임존 명시), 시간순 정렬.
+- 컬럼 통일: `open, high, low, close` (필수), 필요 시 컬럼명 매핑.
 
-### 스냅샷 고정(재현성)
-- **형식**: Parquet(+ 인덱스 UTC 유지)
-- **버저닝/무결성**: 파일 SHA-256, 생성 시각, 소스·심볼·기간·행수·컬럼 목록을 **스냅샷 메타**로 함께 기록
-- **계약**: 이후 단계(전략·시뮬레이션)에서는 본 스냅샷에 대해 **정렬/중복 제거/품질 게이트를 재수행하지 않는다.**
+### 정합성
+- 인덱스: **단조 증가**, **중복 없음**, **음수 시간 간격 금지**.
+- 값의 범위: `open, high, low, close > 0`.
+- 바 무결성: $L_t \le \min\{O_t, C_t, H_t\} \le H_t$ (매핑: $O \to \texttt{open}$, $H \to \texttt{high}$, $L \to \texttt{low}$, $C \to \texttt{close}$).
+- 결측·중복 제거 & 거래 달력 정합(휴장·주말 필터, 가격 **보간 지양**).
+- 위반 시 **즉시 실패**.
 
-### 출력 스키마(예시)
-- **데이터프레임**  
-  인덱스: `DatetimeIndex[UTC]` 단조증가, 중복 없음  
-  컬럼(최소): `open, high, low, close`  
-  컬럼(권장): `open_adj, high_adj, low_adj, close_adj`
-- **스냅샷 메타**(예시 키)  
-  `source, symbol, timezone, start, end, interval, rows, columns, collected_at, snapshot_path, snapshot_sha256`
+### 완전 조정
+- 보정계수:
 
-### 금지(요약)
-- **전략 특징 생성·의사결정 로직 포함 금지**, **미래 정보 사용 금지**
+$$
+a_t = \frac{\mathrm{AdjClose}_t}{\mathrm{Close}_t}
+$$
 
-### 실패 규칙
-- 필수 컬럼 누락, 바 무결성 위반, 비정상 값(≤0), 인덱스 불정합(UTC 아님·중복·비단조) 시 **실패**
+- 조정 OHLC:
+
+$$
+X^{\mathrm{adj}}_t = X_t \cdot a_t,\quad X \in \{ O, H, L, C \}
+$$
+
+- 산출 컬럼: `open_adj, high_adj, low_adj, close_adj` — 존재하면 **항상 이 컬럼만 사용**(혼용 금지).
+
+### 스냅샷 고정
+- 저장 형식: **Parquet** (UTC 인덱스 유지).
+- 메타: **SHA-256** 해시, 생성 시각, `source, symbol, timezone, start, end, interval, rows, columns, snapshot_path, snapshot_sha256`.
+- **계약**: 이후 단계(전략/시뮬레이션)에서 **정렬·중복 제거·품질 게이트 재수행 금지**.
+
+### 비용·체결 메타(참조)
+- 수수료율, 슬리피지율, 호가/로트 단위, 포인트/핍 값은 **참조 상수 저장만** 수행(계산은 시뮬레이션 단계).
 
 ---
 
 ## 2) 전략
 
 ### 역할
-- 데이터 스냅샷을 입력받아
-  1) **전략 전처리(특징 생성)**: SMA, Donchian $L_N$
-  2) **의사결정**: 시그널(진입/보유/청산), 스탑 판정, 포지션 사이징
-  을 수행한다. 데이터 정합화/스냅샷 저장은 담당하지 않는다.
+- 데이터 스냅샷을 입력으로 **특징 생성 → 의사결정(신호·스탑) → 사이징**만 수행한다.
+- 데이터 정합화/스냅샷 저장은 **데이터 단계 책임**.
 
 ### 입력 계약
-- **데이터 스냅샷 계약 준수**(상기 데이터 섹션의 스키마·규칙 사용)
+- `*_adj` 존재 시 **항상 우선 사용**(`close_adj`, `low_adj` 등).
 
-### 2.1 전처리(특징 생성)
+### 2.1 특징(피처)
+**SMA**
 
-#### SMA 특징
-- 입력: `close_adj`가 있으면 우선, 없으면 `close`
-- 산출: `sma{short}`, `sma{long}`(예: `sma10`, `sma50`)
-- 윈도 경계: 각 SMA는 첫 유효 시점 전에는 `NaN`(의사결정 금지)
-
-정의
 $$
 \mathrm{SMA}_{n}(t)=\frac{1}{n}\sum_{i=0}^{n-1} P_{t-i}
 $$
 
-증분 갱신식
 $$
 \mathrm{SMA}_{n}(t)=\mathrm{SMA}_{n}(t-1)+\frac{P_t-P_{t-n}}{n}
 $$
 
-#### Donchian 기준선(이전 $N$-저가)
-- 입력: `low_adj`가 있으면 우선, 없으면 `low`
-- 산출: `\mathrm{prev\_low}_N(t-1)` 으로
+- 입력: `close_adj`(우선), 없으면 `close`.
+- 윈도 경계 전 구간은 `NaN`(의사결정 금지).
+
+**Donchian 이전 N-저가 기준선**
+
 $$
-L_N(t-1)=\min_{0\le i<N} L_{t-1-i}
-$$
-- 윈도 경계: $t<N$ 구간은 `NaN`(스탑 판정 금지)
-
-### 2.2 의사결정 규칙
-
-#### A) 진입/보유 시그널: SMA10/50 크로스(롱 온리)
-- 결정 시점: **Close($t-1$)** 까지 확정된 `sma{short}`, `sma{long}`
-- 체결 시점: **Open($t$)**
-- 타이브레이크: $\text{diff}=\mathrm{SMA}_{10}-\mathrm{SMA}_{50}$; $\text{diff}>\epsilon \Rightarrow 1$ 그 외 0, $\epsilon\ge0$
-- 산출: 인덱스 $t$에서 $t$ Open에 적용될 `signal_next` ∈ {0,1}
-
-#### B) 보호 스탑: Donchian $N$-일 최저가 이탈(롱 기준)
-- 판정 시점: **Close($t$)** 에서 $L_t \le L_N(t-1)$ 이면 히트
-- 체결 시점: **Open($t+1$)**
-- 산출: 인덱스 $t$에서 `stop_hit` ∈ {True, False}, `stop_level = \mathrm{prev\_low}_N(t)`
-
-정의
-$$
-L_N(t)=\min_{0\le i < N} L_{t-i},\quad L_t \le L_N(t-1)\Rightarrow \text{Stop Hit at } t
+\mathrm{prev\_low}_N(t-1)=\min_{0\le i < N} L_{t-1-i}
 $$
 
-#### C) 포지션 사이징: Fixed Fractional
-- 위험 예산
+- 입력: `low_adj`(우선), 없으면 `low`.
+- 초기 $t<N$ 구간은 `NaN`.
+
+### 2.2 의사결정
+**A) 신호 — SMA10/50 크로스(롱 온리)**  
+- 결정: **Close** ($t-1$) 확정 특징.
+- 체결: **Open** ($t$).
+- 타이브레이크(안정 표기):
+
 $$
-R=f\cdot E
+\texttt{signal\_next}=
+\begin{cases}
+1 & \text{if } \mathrm{SMA}_{10}-\mathrm{SMA}_{50}>\epsilon \\
+0 & \text{otherwise}
+\end{cases}
+\qquad (\epsilon\ge 0)
 $$
-- 스탑 거리(롱)
-$$
-D=\text{Entry}-\text{stop\_level}
-$$
-$D\le0 \Rightarrow Q=0$
-- 자산군별 수량
-$$
-Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor,\quad
-Q_{\text{futures}}=\left\lfloor \frac{R}{D\cdot V} \right\rfloor,\quad
-Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot PV} \right\rfloor
-$$
-- 실행 수량(하향 라운딩)
-$$
-Q_{\text{exec}}=\Big\lfloor \frac{Q}{s} \Big\rfloor\cdot s
-$$
-- 단위 규칙: $R$과 분모 통화 단위 일치(주식: $D$, 선물: $D\cdot V$, FX: $D_{\mathrm{pips}}\cdot PV$); lot/호가 단위 $s>0$
+
+**B) 스탑 — Donchian N-저가 이탈(롱 기준)**  
+- 판정: **Close** ($t$) 에서 $L_t \le \mathrm{prev\_low}_N(t-1)$.
+- 체결: **Open** ($t+1$).
+- 산출: $\texttt{stop\_hit}\in\{\mathrm{True},\mathrm{False}\}$, $\texttt{stop\_level}=\mathrm{prev\_low}_N(t)$.
+
+### 2.3 사이징 — Fixed Fractional(스펙 산출)
+- 전략은 **룩어헤드 방지**를 위해 최종 수량을 계산하지 않고, 다음 **사이징 스펙**을 반환한다: 위험 비율 $f$, 스탑 레벨 `stop_level`, lot/호가 단위 $s$, 자산군 파라미터(예: 선물 승수 $V$, FX pip 값 $PV$ 등).
+- 실제 위험 예산 $R=f\cdot E$, 스탑 거리 $D=\text{Entry}-\text{stop\_level}$, 수량 $Q$ 및 실행 수량 $Q_{\text{exec}}$ 계산은 **시뮬레이션 On-Open**에서 수행한다.
 
 ---
 
 ## 3) 시뮬레이션
 
 ### 역할
-- **전략 단계의 출력(특징·의사결정)을 시간 순서로 집행**하고, 체결·비용·계좌 상태를 갱신하며 **표준 산출물**을 고정한다.
-- 데이터 정합화나 특징 계산·의사결정은 하지 않는다. **데이터 단계 산출물**과 **전략 단계 연산**만 호출해 사용한다.
+- 전략 출력(특징·신호·스탑·사이징 스펙)을 **타임라인 규약대로 집행**하여 **체결·비용 반영** 후 **산출물 고정**.
+- 데이터 정합화/특징/의사결정 재구현 **금지**(전략 호출만).
 
-### 구성 요소와 호출 관계
-- 수집 모듈: 원천 시계열·소스 메타 수집
-- 전처리 모듈: 정렬·품질 게이트·완전 조정 OHLC 적용, 스냅샷 고정
-- 실행 모듈: 전략에 특징(SMA, Donchian 기준선) 계산 요청 → 시그널·스탑·사이징 의사결정 수신 → 주문/체결/상태 처리
-- 저장 모듈: 거래 로그, 자본 곡선, 지표, 런 구성·스냅샷 메타 보존
-- 오케스트레이션: 수집 → 전처리 → 실행 → 저장(단방향 호출)
-
-### 입력/출력 계약
-- **입력 스냅샷**: `DatetimeIndex[UTC]` 단조증가, 중복 없음; 필수 `open, high, low, close`, 권장 `open_adj, high_adj, low_adj, close_adj`(혼용 금지)
-- **전략 호출 결과**: 특징(`sma{short}, sma{long}, \mathrm{prev\_low}_N(t)`), 의사결정(`signal_next`, `stop_hit`, `stop_level`), 사이징(`qty_next`)
-- **출력 산출물(표준화)**:  
-  거래 로그(체결 시각, 방향, 사유, 수량, 체결가(조정 기준), 수수료, 슬리피지, 실현 손익, 체결 후 자본/포지션 등)  
-  자본 곡선(시각, 자본, 포지션, 누적 수수료/슬리피지, 최대낙폭 등)  
-  지표 요약(총수익, MDD, 승률·페이오프, 샤프 등)  
-  런 메타(설정값, 스냅샷 해시/기간, 생성 시각·버전)
-
-### 의사결정/체결 타임라인(룩어헤드 금지)
-- 시그널: 전일 종가까지의 특징으로 **의사결정**, 다음 날 시가에 **체결**
-- 스탑: 당일 종가에서 히트 **판정**($L_t \le L_N(t-1)$), 다음 날 시가에 **체결**
-- 충돌 시 **스탑 > 시그널** 우선(시그널 주문 억제/취소)
+### 타임라인(룩어헤드 금지, 우선순위)
+- **신호**: **Close** ($t-1$) 결정 → **Open** ($t$) 체결.
+- **스탑**: **Close** ($t$) 판정 → **Open** ($t+1$) 체결.
+- 충돌 시 **스탑 > 신호**(청산 우선).
 
 ### 체결·비용·사이징 반영
-- 체결가: 매수 $=\text{Open}\times(1+\text{slip})$, 매도 $=\text{Open}\times(1-\text{slip})$
-- 수수료: $|\text{체결가}|\times\text{수량}\times\text{commission\_rate}$
-- 사이징: $R=f\cdot E,\ D=\text{Entry}-\text{stop\_level}$; $D\le0$ 또는 lot/호가 단위 미만이면 주문 생성 없음; 필요 시 포트폴리오 노출 상한 $h_{\max}$
+- 체결가: **매수:** $\text{Open\_eff}(1+\text{slip})$, **매도:** $\text{Open\_eff}(1-\text{slip})$  
+  정의: $\text{Open\_eff}=\text{open\_adj}$ (존재 시), 그 외 $\text{open}$.
+- 수수료: $\lvert \text{체결가} \rvert \times \text{수량} \times \text{commission\_rate}$.
+- **사이징 계산(On-Open)**:
+  - 위험 예산: $R=f\cdot E$.
+  - 스탑 거리(롱): $D=\text{Entry}-\text{stop\_level}\; (D\le 0 \Rightarrow Q=0)$.
+  - 자산군별 수량:
 
-### 루프 단계(기본 모델: 롱 온리·0/1 보유·피라미딩 없음)
-1. **On-Open**: 전일 예약 주문 체결(스탑 우선) → 체결가·슬리피지·수수료 반영 → 포지션/현금/자본 업데이트 → 거래 로그 기록
-2. **On-Close**: 전략 호출로 특징 갱신(SMA, $\mathrm{prev\_low}_N$) → 시그널 의사결정 예약(다음 Open 적용) → 스탑 판정 시 청산 예약(다음 Open 적용) → 자본 곡선 스냅샷 기록
+$$Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor$$
 
-### 실패·예외 처리
-- 스냅샷 무결성 위반(필수 컬럼 누락, 인덱스 불정합, 바 불변식 위배) 시 **즉시 실패**
-- 전략 결과가 `NaN`(윈도 경계 미충족)이면 해당 의사결정은 산출하지 않음
-- 시뮬레이션 단계에서 정렬/중복 제거/보간/조정 재수행 금지
+$$Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot V} \right\rfloor$$
+
+$$Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot PV} \right\rfloor$$
+
+  - 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{s} \Big\rfloor \cdot s$.
+  - $D\le 0$ 또는 lot/호가 단위 미만이면 **주문 생성 없음**.
+
+### 루프(롱 온리·0/1 보유)
+1. **On-Open**: 전일 예약 체결 집행(스탑 우선) → 슬리피지·수수료 반영 → 포지션/현금/자본 업데이트 → **거래 로그 기록**.
+2. **On-Close**: 특징 갱신(SMA, $\mathrm{prev\_low}_N$) → 신호 예약·스탑 판정 → **자본 곡선 스냅샷**.
+
+### 입력/출력 계약
+- 입력 스냅샷: `DatetimeIndex[UTC]` 단조증가, 중복 없음; 필수 `open, high, low, close`, 권장 `open_adj, high_adj, low_adj, close_adj`(혼용 금지).
+- 전략 호출 결과: 특징(`sma{short}`, `sma{long}`, $\mathrm{prev\_low}_N(t)$), 의사결정(`signal_next`, `stop_hit`, `stop_level`), **사이징 스펙**($f, s, V, PV$).
+- 출력(표준화):  
+  `trades`(체결 시각, 방향, 사유, 수량, 체결가, 수수료, 슬리피지, 실현 손익, 체결 후 자본/포지션 등)  
+  `equity_curve`(시각, 자본, 포지션, 누적 수수료/슬리피지, 최대낙폭 등)  
+  `metrics`(총수익, MDD, 승률·페이오프, 샤프 등)  
+  `run_meta`(설정값, 스냅샷 해시/기간, 생성 시각·버전)
+
+### 실패/예외
+- 스냅샷 무결성 위반 시 **즉시 실패**.
+- 전략 결과가 `NaN`(윈도 경계 미충족)인 시점은 해당 의사결정 **생성 없음**.
 
 ### 설정
-- 수수료율·슬리피지·초기 자본·파라미터(`sma_short, sma_long, epsilon, donchian_N, f, lot_step, point_value/pip_value, h_max`) 등은 **런 구성으로 주입**한다(본문에 기본값 미기재).
-
-### 저장 규칙
-- 산출물은 **런 단위**로 고정 보관하며, 각 산출물에 타임스탬프·버전·해시를 포함해 **재현성**을 보장한다.
+- 모든 파라미터(`sma_short, sma_long, epsilon, N, f, lot_step, commission_rate, slip, point_value/pip_value, h_max` 등)는 **런 구성으로 주입**하고, `run_meta`에 기록한다.
 
 ---
 
-## 4) 검증
-- **표본내/표본외 분리**, 워크포워드
-- 민감도: 파라미터 $n$(SMA), $N$(Donchian), $f$(위험 비율)
-- 비용/슬리피지 스트레스 테스트, 최대낙폭·리스크 지표 점검
+## 4) 검증·리포팅
+- **분할**: 표본내/외, 워크포워드(예: 3y train → 1y test 롤링).
+- **민감도/스트레스**: $n$(SMA), $N$(Donchian), $f$(위험 비율), 수수료/슬리피지 상향.
+- **리포팅/시각화**: 조합별 `metrics` 집계, 베스트/로버스트 구간(IQR·최악 포함), 자본곡선·히트맵 등.
+- **원칙**: 검증은 **시뮬레이션 엔진 반복 호출만** 수행(전략/체결 로직 재구현 금지).
