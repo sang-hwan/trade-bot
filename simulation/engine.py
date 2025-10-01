@@ -3,13 +3,13 @@
 백테스트 엔진(롱 온리·0/1 보유).
 - 타임라인: On-Open 집행(스탑 우선) → On-Close 판정
 - 룩어헤드 금지: 신호는 Close(t-1) 결정→Open(t) 집행, 스탑은 Close(t) 판정→Open(t+1) 집행
-- SSOT: 전략(신호/스탑/스펙) 호출만, 집행/수수료/사이징 계산은 전용 유틸 호출만.
+- SSOT: 전략(신호/스탑/스펙)과 체결/수수료/사이징 유틸만 호출(재구현 금지)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -23,9 +23,8 @@ from simulation.execution import open_eff, close_eff, calc_commission, apply_buy
 from simulation.sizing_on_open import size_from_spec
 
 
-# ---------- 내부 검증 ----------
+# ---------- 스냅샷 검증 ----------
 def _validate_snapshot(df: pd.DataFrame) -> None:
-    """스냅샷 불변 규약 검증(정렬·수정 금지, 위반 시 즉시 실패)."""
     idx = df.index
     if not isinstance(idx, pd.DatetimeIndex):
         raise ValueError("index must be DatetimeIndex")
@@ -41,8 +40,8 @@ def _validate_snapshot(df: pd.DataFrame) -> None:
 @dataclass
 class Trade:
     ts: pd.Timestamp
-    side: str      # 'buy' | 'sell'
-    reason: str    # 'signal' | 'stop'
+    side: str        # 'buy' | 'sell'
+    reason: str      # 'signal' | 'stop'
     qty: float
     price: float
     commission: float
@@ -62,21 +61,26 @@ def run(
     lot_step: float = 1.0,
     commission_rate: float = 0.0,
     slip: float = 0.0,
-    V: Optional[float] = None,
-    PV: Optional[float] = None,
+    V: float | None = None,
+    PV: float | None = None,
     initial_equity: float = 1_000_000.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     공개 API
-    - 입력: DatetimeIndex[UTC] 스냅샷(변경 금지)
+    - 입력: DatetimeIndex[UTC] 스냅샷(불변 가정)
     - 출력: {'trades': DataFrame, 'equity_curve': DataFrame, 'metrics': dict, 'run_meta': dict}
     """
     if df.empty:
         raise ValueError("empty dataframe")
-    _validate_snapshot(df)
-    df = df.copy()  # 불변 보장(내용 수정 없음)
 
-    # 전략 산출물(전략 모듈 호출만; 재구현 금지)
+    # 컬럼 유일성/단일 레벨 가드(스냅샷/루프 진입 전)
+    if isinstance(df.columns, pd.MultiIndex) or df.columns.duplicated().any():
+        raise ValueError("Engine requires unique, single-level columns.")
+
+    _validate_snapshot(df)
+    df = df.copy()  # 입력 불변 보장
+
+    # 전략 산출물
     signal_next = sma_cross_long_only(df, short=10, long=50, epsilon=epsilon)
     stop_df = donchian_stop_long(df, N=N)
     sizing_spec = build_fixed_fractional_spec(df, N=N, f=f, lot_step=lot_step, V=V, PV=PV)
@@ -107,7 +111,7 @@ def run(
             trades.append(Trade(ts, "sell", "stop", sell_qty, exit_price, commission, slip, realized, cash, qty))
         pending_exit = False
 
-        # 진입(포지션 없고, signal_next[t]==1)
+        # 진입(포지션 없음 & signal_next[t]==1)
         if qty == 0.0:
             sig = signal_next.get(ts)
             if pd.notna(sig) and int(sig) == 1 and ts in sizing_spec.index:
@@ -125,7 +129,6 @@ def run(
                     )
                     Q_exec = float(sized["Q_exec"])
                     if Q_exec > 0.0:
-                        # 현금 확인 후 집행
                         commission = calc_commission(entry_price, Q_exec, commission_rate)
                         total_cost = entry_price * Q_exec + commission
                         if total_cost <= cash:

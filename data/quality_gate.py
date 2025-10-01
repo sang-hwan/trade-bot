@@ -4,7 +4,7 @@
 - 입력 DataFrame은 수정하지 않으며, 위반 시 QualityError를 즉시 발생시킨다.
 - 불변식
   • 인덱스: DatetimeIndex(tz='UTC'), 단조 증가, 중복/음수·0 간격 없음
-  • 필수 컬럼: open, high, low, close  (모두 숫자형·결측 없음·양수, 1-D Series)
+  • 필수 컬럼: open, high, low, close (숫자형·결측 없음·양수, 1-D Series)
   • 바 무결성: 각 t에서 low ≤ high, low ≤ open/close ≤ high
   • 선택 컬럼: volume 존재 시 숫자형·결측 없음·음수 금지, 1-D Series
 """
@@ -111,6 +111,10 @@ def validate(
     """
     if min_rows is not None and len(df) < min_rows:
         raise QualityError(f"행 수 부족: {len(df)} < {min_rows}")
+
+    # 다차원/중복 컬럼 즉시 실패(검증 초기에 추가)
+    if isinstance(df.columns, pd.MultiIndex) or df.columns.duplicated().any():
+        raise QualityError("Duplicate/MultiIndex columns are not allowed. Flatten & dedupe columns first.")
 
     _assert_columns(df, required=("open", "high", "low", "close"))
     _assert_index_is_utc_dtindex(df)

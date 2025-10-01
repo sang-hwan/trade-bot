@@ -28,7 +28,7 @@ class FeatureError(ValueError):
 
 
 def _choose_col(df: pd.DataFrame, candidates: Iterable[str], *, param_name: str) -> str:
-    """후보 컬럼 중 최초로 존재하는 이름 반환. 없으면 FeatureError."""
+    """후보 컬럼 중 먼저 존재하는 이름 반환. 없으면 FeatureError."""
     for c in candidates:
         if c in df.columns:
             return c
@@ -43,21 +43,25 @@ def _ensure_positive_int(value: int, *, name: str) -> None:
 
 
 def _ensure_str_opt(value: str | None, *, name: str) -> None:
-    """옵션 문자열 파라미터는 None 또는 str 한 개만 허용."""
+    """옵션 문자열 파라미터는 None 또는 단일 str만 허용."""
     if value is not None and not isinstance(value, str):
         raise FeatureError(f"'{name}' must be a single column name (str), not {type(value).__name__}")
 
 
+def _ensure_1d(x: pd.Series | pd.DataFrame, *, name: str) -> None:
+    """입력은 반드시 1-D Series여야 함(중복 컬럼 등으로 2-D 유입 차단)."""
+    if isinstance(x, pd.DataFrame) or getattr(x, "ndim", 1) != 1:
+        detail = f"DataFrame with columns={list(x.columns)}" if isinstance(x, pd.DataFrame) else f"ndim={getattr(x,'ndim','NA')}"
+        raise FeatureError(f"Feature expects a 1-D Series for '{name}', got {detail}. Possible duplicate column names.")
+
+
 def _to_numeric_series(s: pd.Series | pd.DataFrame, *, name: str) -> pd.Series:
-    """1-D Series만 허용. DataFrame이 들어오면 명시적으로 실패."""
+    """1-D Series만 허용, 숫자형 강제. 변환 불가값 존재 시 실패."""
     if isinstance(s, pd.DataFrame):
-        raise FeatureError(
-            f"column '{name}' must be a 1-D Series, got DataFrame with columns={list(s.columns)}"
-        )
+        raise FeatureError(f"column '{name}' must be a 1-D Series, got DataFrame with columns={list(s.columns)}")
     try:
         return pd.to_numeric(s, errors="raise")
     except Exception as e:
-        # 비수치/변환 불가 즉시 실패(상위에서 원인 파악 용이)
         raise FeatureError(f"column '{name}' must be numeric") from e
 
 
@@ -67,7 +71,9 @@ def sma(df: pd.DataFrame, n: int, *, price_col: str | None = None) -> pd.Series:
     _ensure_str_opt(price_col, name="price_col")
 
     col = price_col or _choose_col(df, ("close_adj", "close"), param_name="price_col")
-    s = _to_numeric_series(df[col], name=col)
+    s_raw = df[col]
+    _ensure_1d(s_raw, name=col)
+    s = _to_numeric_series(s_raw, name=col)
     out = s.rolling(window=n, min_periods=n).mean()
     out.name = f"sma{n}"
     return out
@@ -79,7 +85,9 @@ def prev_low_n_tminus1(df: pd.DataFrame, N: int, *, low_col: str | None = None) 
     _ensure_str_opt(low_col, name="low_col")
 
     col = low_col or _choose_col(df, ("low_adj", "low"), param_name="low_col")
-    low = _to_numeric_series(df[col], name=col)
+    low_raw = df[col]
+    _ensure_1d(low_raw, name=col)
+    low = _to_numeric_series(low_raw, name=col)
     out = low.shift(1).rolling(window=N, min_periods=N).min()
     out.name = f"prev_low_{N}_tminus1"
     return out
@@ -91,7 +99,9 @@ def prev_low_n(df: pd.DataFrame, N: int, *, low_col: str | None = None) -> pd.Se
     _ensure_str_opt(low_col, name="low_col")
 
     col = low_col or _choose_col(df, ("low_adj", "low"), param_name="low_col")
-    low = _to_numeric_series(df[col], name=col)
+    low_raw = df[col]
+    _ensure_1d(low_raw, name=col)
+    low = _to_numeric_series(low_raw, name=col)
     out = low.rolling(window=N, min_periods=N).min()
     out.name = f"prev_low_{N}"
     return out

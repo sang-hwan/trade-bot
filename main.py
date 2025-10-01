@@ -21,7 +21,7 @@ import simulation.engine as eng
 
 
 def _today_ymd() -> str:
-    return _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
 
 
 def _safe_name(symbol: str) -> str:

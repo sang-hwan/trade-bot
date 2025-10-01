@@ -1,8 +1,8 @@
 # snapshot.py
 """
 스냅샷 고정(Parquet 저장 + SHA-256 해시 + 메타 생성).
-- 데이터는 이미 품질 검증/조정이 끝났다고 가정(수정 없음).
-- 인덱스: DatetimeIndex(tz='UTC')를 그대로 보존.
+- 전제: 입력은 품질 검증/조정 완료, 수정 없음.
+- 인덱스: DatetimeIndex(tz='UTC') 보존.
 
 공개 API
 - write(df, *, source, symbol, start, end, interval, out_dir, filename=None, timezone='UTC') -> SnapshotMeta
@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+# 표준 라이브러리 우선
 from dataclasses import dataclass
 from datetime import datetime, timezone as _tz
 from hashlib import sha256
 from pathlib import Path
 
+# 서드파티
 import pandas as pd
 
 __all__ = ["SnapshotMeta", "SnapshotError", "write"]
@@ -71,6 +73,33 @@ def _default_filename(source: str, symbol: str, interval: str, end: str | None) 
     return f"{base}.parquet"
 
 
+def _to_parquet_with_fallback(
+    df: pd.DataFrame,
+    path: Path,
+    *,
+    engine_pref: str | None,
+    compression: str | None,
+) -> None:
+    """엔진 우선순위에 따라 저장 시도: 지정값 → 'pyarrow' → 'fastparquet' → 기본탐지."""
+    tried: list[tuple[str | None, str]] = []
+    engines: list[str | None] = []
+    if engine_pref:
+        engines.append(engine_pref)
+    engines.extend([e for e in ("pyarrow", "fastparquet") if e != engine_pref])
+    engines.append(None)  # pandas 기본 탐지
+
+    for eng in engines:
+        try:
+            df.to_parquet(path, index=True, engine=eng, compression=compression)
+            return
+        except Exception as e:  # 다양한 엔진 예외를 간결히 수집
+            tried.append((eng, repr(e)))
+
+    msgs = " | ".join([f"engine={eng!r}: {err}" for eng, err in tried])
+    order = " -> ".join([repr(e) for e in engines])
+    raise SnapshotError(f"Parquet write failed. Tried: {order} | errors: {msgs}")
+
+
 def write(
     df: pd.DataFrame,
     *,
@@ -87,9 +116,9 @@ def write(
 ) -> SnapshotMeta:
     """
     Parquet 저장 → 파일 해시 산출 → SnapshotMeta 반환.
-    - df.index: DatetimeIndex(tz='UTC') 필수(변환/수정 없음)
+    - df.index: DatetimeIndex(tz='UTC') 필수(변환 없음)
     - filename 미지정 시 '{source}_{symbol}_{interval}_{YYYYMMDDhhmmssZ}.parquet'
-    - parquet_*: pandas.to_parquet에 전달
+    - parquet_*는 pandas.to_parquet 인자로 전달(엔진은 폴백 적용)
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise SnapshotError("df.index는 DatetimeIndex여야 합니다.")
@@ -101,11 +130,11 @@ def write(
         raise SnapshotError(f"out_dir가 디렉터리가 아닙니다: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    fname = filename or _default_filename(source, symbol, interval, end)
-    fname = _ensure_parquet_suffix(fname)
+    fname = _ensure_parquet_suffix(filename or _default_filename(source, symbol, interval, end))
     path = out_dir / fname
 
-    df.to_parquet(path, engine=parquet_engine, compression=parquet_compression, index=True)
+    _to_parquet_with_fallback(df, path, engine_pref=parquet_engine, compression=parquet_compression)
+
     digest = _file_sha256(path)
 
     return SnapshotMeta(
