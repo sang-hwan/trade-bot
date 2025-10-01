@@ -10,9 +10,96 @@ deactivate
 
 # 필요 라이브러리 설치
 pip install -r requirements.txt
+
+# 해외주식 (AAPL, Yahoo)
+$ArgsAAPL = @(
+  '--source','yahoo'                     # 데이터 소스: Yahoo Finance
+  '--symbol','AAPL'                      # 종목 심볼
+  '--start','2018-01-01'                 # 수집 시작일(UTC)
+  '--end','2025-09-30'                   # 수집 종료일
+  '--interval','1d'                      # 봉 주기: 일봉
+  '--N','20','--f','0.02','--lot_step','0.01'      # Donchian N=20, 위험비율 f=2%, 라운딩 단위 0.01
+  '--commission_rate','0.001','--slip','0.0005','--epsilon','0'  # 수수료 0.1%, 슬리피지 0.05%, ε=0
+  '--initial_equity','10000000'          # 초기자본
+  '--snapshot'                           # 스냅샷 저장 활성화(Parquet+SHA-256)
+  '--out_dir','.\runs\AAPL_Donchian_N20_F02'       # 출력 디렉터리
+)
+python .\main.py @ArgsAAPL                 # 엔진 실행
+
+# 암호화폐 (BTC/KRW, Upbit)
+$ArgsBTC = @(
+  '--source','upbit'                      # 데이터 소스: Upbit Public API
+  '--symbol','BTC/KRW'                    # 심볼(실행 시 'KRW-BTC'로 자동 정규화)
+  '--start','2018-01-01'                  # 수집 시작일(UTC)
+  '--end','2025-09-30'                    # 수집 종료일
+  '--interval','1d'                       # 인터벌(실행 시 'day'로 자동 정규화)
+  '--N','55','--f','0.015','--lot_step','1000'     # Donchian N=55, f=1.5%, 라운딩 단위 1,000(KRW)
+  '--commission_rate','0.0005','--slip','0.0007','--epsilon','0' # 수수료 0.05%, 슬리피지 0.07%, ε=0
+  '--initial_equity','10000000'           # 초기자본
+  '--snapshot'                            # 스냅샷 저장 활성화
+  '--out_dir','.\runs\BTC_Donchian_N55_F015'       # 출력 디렉터리
+)
+python .\main.py @ArgsBTC                  # 엔진 실행
+```
+
+```text
+다음 **권장 수정 순서**대로 적용하세요. (기존 API·동작은 그대로, 가드/정규화만 추가)
+
+2. **data/quality_gate.py** — 다차원/중복 컬럼 즉시 실패(명확한 에러)
+
+   * 검증 초기에 추가:
+
+     ```python
+     if isinstance(df.columns, pd.MultiIndex) or df.columns.duplicated().any():
+         raise ValueError("Duplicate/MultiIndex columns are not allowed. Flatten & dedupe columns first.")
+     ```
+
+3. **data/adjust.py** — 조정 직전 1-D 가드(Series만 허용)
+
+   * 입력 컬럼이 **반드시 1-D Series**임을 확인:
+
+     ```python
+     for c in [open_col, high_col, low_col, close_col]:
+         s = df[c]
+         if getattr(s, "ndim", 1) != 1:
+             raise ValueError(f"Column '{c}' must be 1-D (got DataFrame). Check duplicate column names.")
+     ```
+
+4. **strategy/features.py** — 피처 계산 1-D 가드(마지막 방어선)
+
+   * `sma`, `prev_low_*` 내부의 입력 검증 강화:
+
+     ```python
+     if getattr(x, "ndim", 1) != 1:
+         raise ValueError("Feature expects a 1-D Series. Possible duplicate column names.")
+     ```
+
+5. **simulation/engine.py** — 엔진 시작 전 컬럼 유일성 확인
+
+   * 스냅샷/루프 진입 전에 추가:
+
+     ```python
+     if isinstance(df.columns, pd.MultiIndex) or df.columns.duplicated().any():
+         raise ValueError("Engine requires unique, single-level columns.")
+     ```
+
+6. **main.py** — 조정 직후 최종 안전벨트(무해한 보강)
+
+   * `df = adj(df)` **직후** 평탄화+중복 제거 1회 더:
+
+     ```python
+     if isinstance(df.columns, pd.MultiIndex):
+         df.columns = [c[-1] for c in df.columns]
+     df = df.loc[:, ~df.columns.duplicated(keep="last")]
+     ```
+
+이 순서로 적용하면 “**arg must be a list, tuple, 1-d array, or Series**”류 오류의 주요 원인(다차원/중복 컬럼로 인한 2-D 유입)을 **원천→검증→조정→피처→엔진→메인** 단계에서 단계적으로 차단합니다. 기존 공개 API·출력 스키마는 변하지 않아 **호환성에 영향 없습니다**.
 ```
 
 ---
+
+## 개발 프로젝트 파일 목록
+
 ### data/
 
 * `collect.py` — 원천(CSV/API) 로드 → 인덱스 `DatetimeIndex[UTC]` 정규화 → 컬럼 매핑(`open, high, low, close`)
