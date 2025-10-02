@@ -17,8 +17,8 @@
     "low_adj",
     "close_adj"
   ],
-  "snapshot_path": "C:\\Users\\user\\Desktop\\work_space\\trade-bot\\runs\\AAPL_Donchian_N20_F02\\yahoo_AAPL_1d_20250930000000Z.parquet",
-  "snapshot_sha256": "490fc63ab5472a5ef2f9b28bc90ac9509111a8285fc84a75df49e7f99e534dc1",
-  "collected_at": "2025-10-01T13:52:09Z",
+  "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\AAPL_Donchian_N20_F02\\yahoo_AAPL_1d_20250930000000Z.parquet",
+  "snapshot_sha256": "b1c5d903c45e9a74ac78203a9b18a47a6dbd0e4174a5da0d1d0e992c4bc4398e",
+  "collected_at": "2025-10-02T02:46:39Z",
   "timezone": "UTC"
 }

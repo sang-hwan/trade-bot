@@ -1,0 +1,10 @@
+{
+  "heatmap": "validation_report\\heatmap_q25_vs_q75_median.png",
+  "scatter_best_vs_robust": "validation_report\\scatter_best_vs_robust.png",
+  "summary_md": "validation_report\\summary.md",
+  "equity_combo_602": "validation_report\\equity_combo_602.png",
+  "equity_combo_598": "validation_report\\equity_combo_598.png",
+  "equity_combo_595": "validation_report\\equity_combo_595.png",
+  "equity_combo_596": "validation_report\\equity_combo_596.png",
+  "equity_combo_597": "validation_report\\equity_combo_597.png"
+}
