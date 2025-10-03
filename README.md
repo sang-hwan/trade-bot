@@ -58,109 +58,98 @@
 ## 1) 데이터
 
 ### 데이터 수집
-
-* 원천 API에서 OHLCV를 수집해 컬럼을 `open, high, low, close, volume`으로 표준화하고, 인덱스를 **UTC `DatetimeIndex`**로 정렬합니다.
-* **기준 통화(`base_currency`)**를 명시하고, 비기준 통화 자산은 **동일 타임스탬프의 FX 시계열**을 함께 로드합니다.
-* 종목별 거래 캘린더 메타의 명칭을 **`calendar_id`**로 고정합니다(예: `XNYS`, `XKOS`, `24x7`). 이후 **On-Open/On-Close** 타이밍 검증에 사용합니다.
+- 원천 API에서 OHLCV를 수집해 컬럼을 `open, high, low, close, volume`으로 표준화하고, 인덱스를 **UTC `DatetimeIndex`**로 정렬합니다.
+- **기준 통화(`base_currency`)**를 명시하고, 비기준 통화 자산은 **동일 타임스탬프의 FX 시계열**을 함께 로드합니다.
+- 종목별 거래 캘린더 메타의 명칭을 **`calendar_id`**로 고정합니다(예: `XNYS`, `XKOS`, `24x7`). 이후 **On-Open/On-Close** 타이밍 검증에 사용합니다.
 
 ### 데이터 정합성
+- **인덱스 무결성**: `DatetimeIndex[UTC]` 단조증가, 중복 없음.
+- **바 무결성**(분리 표기):
 
-* **인덱스 무결성**: `DatetimeIndex[UTC]` 단조증가, 중복 없음.
+$$
+L_t \le \min\{O_t, C_t\} \\[6pt]
+\max\{O_t, C_t\} \le H_t
+$$
 
-* **바 무결성**(분리 표기):
-
-  $$
-  L_t \le \min{O_t, C_t}
-  $$
-
-  $$
-  \max{O_t, C_t} \le H_t
-  $$
-
-* **값 범위·결측**: `open, high, low, close` 양수, 필수 컬럼 결측 없음.
-
-* **메타 검증 항목**: `lot_step > 0`, `price_step > 0`, `calendar_id` 키 일치, 해당 시점 **FX 레이트 존재**(부재 시 즉시 실패).
+- **값 범위·결측**: `open, high, low, close` 양수, 필수 컬럼 결측 없음.
+- **메타 검증 항목**: `lot_step > 0`, `price_step > 0`, `calendar_id` 키 일치, 해당 시점 **FX 레이트 존재**(부재 시 즉시 실패).
 
 ### 완전 조정
-
-* 조정 계수 $a_t=\dfrac{\mathrm{AdjClose}_t}{\mathrm{Close}_t}$로 `open_adj, high_adj, low_adj, close_adj`를 생성합니다(미제공 시 $a_t=1.0$).
-* 이후 단계에서 `*_adj`가 존재하면 **항상 우선 사용**합니다(혼용 금지).
+- 조정 계수 $a_t=\dfrac{\mathrm{AdjClose}_t}{\mathrm{Close}_t}$로 `open_adj, high_adj, low_adj, close_adj`를 생성합니다(미제공 시 $a_t=1.0$).
+- 이후 단계에서 `*_adj`가 존재하면 **항상 우선 사용**합니다(혼용 금지).
 
 ### 기준 통화 환산·세션/캘린더 메타
-
-* 가격 통화가 기준 통화와 다를 경우, **해당 시점 FX를 곱하거나(현지→기준 통화) 나누는 규약을 한 문장으로 명시**하여 평가·손익을 **기준 통화로 환산**합니다.
-* 자산별 **`calendar_id`**를 스냅샷에 연결하고, 시뮬레이션의 타임라인 검증 기준으로 사용합니다.
+- 가격 통화가 기준 통화와 다를 경우, **해당 시점 FX를 곱하거나(현지→기준 통화) 나누는 규약을 한 문장으로 명시**하여 평가·손익을 **기준 통화로 환산**합니다.
+- 자산별 **`calendar_id`**를 스냅샷에 연결하고, 시뮬레이션의 타임라인 검증 기준으로 사용합니다.
 
 ### 스냅샷 고정
-
-* 저장 형식: **Parquet**.
-* **메타데이터**에는 다음을 포함합니다:
+- 저장 형식: **Parquet**.
+- **메타데이터**에는 다음을 포함합니다:  
   `source, symbol, start, end, interval, rows, columns, snapshot_path, snapshot_sha256, collected_at, timezone, base_currency, fx_source, fx_source_ts, calendar_id, instrument_registry_hash`.
-* 스냅샷 해시(`snapshot_sha256`)로 **재현성**을 고정합니다.
+- 스냅샷 해시(`snapshot_sha256`)로 **재현성**을 고정합니다.
 
 ---
 
 ## 2) 전략
 
 ### 역할
-
-* 데이터 스냅샷을 입력으로 **특징 생성 → 의사결정(신호·스탑) → 사이징 → 리밸런싱 스펙**만 수행한다.
-* 데이터 정합화/스냅샷 저장은 **데이터 단계 책임**.
+- 데이터 스냅샷을 입력으로 **특징 생성 → 의사결정(신호·스탑) → 사이징 → 리밸런싱 스펙**만 수행한다.
+- 데이터 정합화/스냅샷 저장은 **데이터 단계 책임**.
 
 ### 입력 계약
-
-* `*_adj` 존재 시 **항상 우선 사용**(`close_adj`, `low_adj` 등, 혼용 금지).
+- `*_adj` 존재 시 **항상 우선 사용**(`close_adj`, `low_adj` 등, 혼용 금지).
+- **라운딩 용어 표준화:** **수량 라운딩 = `lot_step`**, **가격 라운딩 = `price_step`**(“호가 단위”라는 표현은 사용하지 않음).
 
 ### 2.1 특징(피처)
 
 **SMA**
 
 $$
-\mathrm{SMA}*{n}(t)=\frac{1}{n}\sum*{i=0}^{n-1} P_{t-i}
+\mathrm{SMA}_n(t) = \frac{1}{n}\sum_{i=0}^{n-1} P_{t-i}
 $$
 
 $$
-\mathrm{SMA}*{n}(t)=\mathrm{SMA}*{n}(t-1)+\frac{P_t-P_{t-n}}{n}
+\mathrm{SMA}_n(t) = \mathrm{SMA}_n(t-1) + \frac{P_t - P_{t-n}}{n}
 $$
 
-* 입력: `close_adj`(우선), 없으면 `close`.
-* 윈도 경계 전 구간은 `NaN`(의사결정 금지).
+- 입력: `close_adj`(우선), 없으면 `close`.
+- 윈도 경계 전 구간은 `NaN`(의사결정 금지).
 
 **Donchian 이전 N-저가 기준선 (prev_low_N)**
 
 $$
-\mathrm{prev_low}*N(t-1)=\min*{0\le i < N} L_{t-1-i}
+\mathrm{prev\_low}_N(t-1) = \min_{0 \le i < N} L_{t-1-i}
 $$
 
-* 입력: `low_adj`(우선), 없으면 `low`.
-* 초기 $t<N$ 구간은 `NaN`.
+- 입력: `low_adj`(우선), 없으면 `low`.
+- 초기 $t<N$ 구간은 `NaN`.
 
 ### 2.2 의사결정
 
 **A) 신호 — SMA10/50 크로스(롱 온리)**
 
-* 결정: **Close** ($t-1$) 확정 특징.
-* 체결: **Open** ($t$).
+- 결정: **Close** ($t-1$) 확정 특징.
+- 체결: **Open** ($t$).
 
 $$
-\texttt{signal_next}=
+\texttt{signal\_next} =
 \begin{cases}
-1 & \text{if } \mathrm{SMA}*{10}-\mathrm{SMA}*{50}>\epsilon \
-0 & \text{otherwise}
+1, & \text{if } \mathrm{SMA}_{10}(t-1) - \mathrm{SMA}_{50}(t-1) > \epsilon, \\[6pt]
+0, & \text{otherwise.}
 \end{cases}
-\qquad (\epsilon\ge 0)
+\qquad (\epsilon \ge 0)
 $$
 
 **B) 스탑 — Donchian N-저가 이탈(롱 기준)**
 
-* 판정: **Close** ($t$) 에서 $L_t \le \mathrm{prev_low}_N(t-1)$.
-* 체결: **Open** ($t+1$).
-* 산출: `stop_hit` $\in{\mathrm{True},\mathrm{False}}$, `stop_level` $=\mathrm{prev_low}_N(t)$.
+- 판정: **Close** ($t$) 에서 $L_t \le \mathrm{prev\_low}_N(t-1)$.
+- 체결: **Open** ($t+1$).
+- 산출: `stop_hit` $\in \{\mathrm{True}, \mathrm{False}\}$, `stop_level` $=\mathrm{prev\_low}_N(t)$.
 
 ### 2.3 사이징 — Fixed Fractional(스펙 산출)
 
-* 전략은 **룩어헤드 방지**를 위해 최종 수량을 계산하지 않고, 다음 **사이징 스펙**을 반환한다: 위험 비율 $f$, 스탑 레벨 `stop_level`, 수량 라운딩 단위 $s$(**$s \equiv \texttt{lot_step}$**), 자산군 파라미터(예: 선물 승수 $V$, FX pip 값 $PV$ 등). 가격 라운딩은 **`price_step`**로 별도 처리한다.
-* 실제 위험 예산 $R=f\cdot E$, 스탑 거리(롱) $D=\text{Entry}-\texttt{stop_level}$, 수량 $Q$ 및 실행 수량 $Q_{\text{exec}}$ 계산은 **시뮬레이션 On-Open**에서 수행한다.
+- 전략은 **룩어헤드 방지**를 위해 최종 수량을 계산하지 않고, 다음 **사이징 스펙**을 반환한다: 위험 비율 $f$, 스탑 레벨 `stop_level`, 수량 라운딩 단위 $s$ (**$s \equiv \texttt{lot\_step}$**), 자산군 파라미터(예: 선물 승수 $V$, FX pip 값 $PV$ 등). **가격 라운딩은 `price_step`로 별도 처리**한다.
+- 실제 위험 예산 $R=f\cdot E$, 스탑 거리(롱) $D=\text{Entry}-\texttt{stop\_level}$, 수량 $Q$ 및 실행 수량 $Q_{\text{exec}}$ 계산은 **시뮬레이션 On-Open**에서 수행한다.
 
 $$
 Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor
@@ -174,75 +163,67 @@ $$
 Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot PV} \right\rfloor
 $$
 
-* 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{s} \Big\rfloor \cdot s$ (**$s \equiv \texttt{lot_step}$**).
-* $D\le 0$ 또는 lot/호가 단위 미만이면 **주문 생성 없음**.
+- 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{s} \Big\rfloor \cdot s$ (**$s \equiv \texttt{lot\_step}$**).
+- **규칙:** $D \le 0 \Rightarrow$ 주문 없음. (**`lot_step` 미만** 또는 **`price_step` 라운딩 불능**일 때도 주문 없음)
 
-### 2.4 리밸런싱 — 현금흐름 리밸런싱(Cash-Flow Rebalancing)
+### 2.4 리밸런싱 — 현금흐름 리밸런싱 (Cash-Flow Rebalancing)
 
 **목표**
-
-* 외부 **순현금흐름 $F_t$**(배당/이자/입출금)를 이용해 **불필요한 매도 없이** 목표 비중 $\mathbf{w}$에 **단순·일관되게** 근접한다.
+- 외부 **순현금흐름 $F_t$**(배당/이자/입출금)를 이용해 **불필요한 매도 없이** 목표 비중 $\mathbf{w}$에 **단순·일관되게** 근접한다.
 
 **입력**
-
-* 전일 평가액: 각 자산 $V_i(t!-!1)$, 총액 $P_{t-1}=\sum_i V_i(t!-!1)$
-* 목표 비중: $\mathbf{w}=(w_1,\dots,w_n),\ \sum_i w_i=1$
-* 순현금흐름: $F_t$ (**$F_t>0$ 유입**, **$F_t<0$ 유출**)
+- 전일 평가액: 각 자산 $V_i(t-1)$, 총액 $P_{t-1}=\sum_i V_i(t-1)$
+- 목표 비중: $\mathbf{w}=(w_1,\dots,w_n),\ \sum_i w_i=1$
+- 순현금흐름: $F_t$ (**$F_t>0$ 유입**, **$F_t<0$ 유출**)
 
 **기호 정의**
-
-* $I^+={i:\ d_i>0}$, $I^-={i:\ d_i<0}$
-* $S^+=\sum_{i\in I^+} d_i$, \quad $S^-=\sum_{i\in I^-} \lvert d_i\rvert$
-* 갭 $d_i = T_i - V_i(t!-!1)$, \quad $T_i = w_i \cdot P^*$, \quad $P^* = P_{t-1}+F_t$
+- $I^+ = \{ i:\ d_i>0 \}$, $I^- = \{ i:\ d_i<0 \}$
+- $S^+ = \sum_{i\in I^+} d_i$, \quad $S^- = \sum_{i\in I^-} \lvert d_i\rvert$
+- 갭 $d_i = T_i - V_i(t-1)$, \quad $T_i = w_i \cdot P^*$, \quad $P^* = P_{t-1}+F_t$
 
 **권장 집행 규칙(결정적)**
 
-* **유입($F_t\ge 0$)**: **미달 자산에만 매수**.
+- **유입($F_t\ge 0$)**: **미달 자산에만 매수**.
 
 $$
 \Delta_i^{\mathrm{buy}} =
 \begin{cases}
-\dfrac{d_i}{S^+}\cdot \min(F_t,\ S^+) & i\in I^+,, S^+>0[6pt]
-0 & \text{otherwise}
+\dfrac{d_i}{S^+}\cdot \min(F_t, S^+), & \text{if } i\in I^+,\, S^+>0, \\[6pt]
+0, & \text{otherwise.}
 \end{cases}
 $$
 
-* **잔여 처리(유입)**: $F_t > S^+$이면 **잔여는 현금 보유**(추가 매수 금지).
-* **유출($F_t<0$)**: **과체중 자산에서만 매도**.
+- **잔여 처리(유입)**: $F_t > S^+$이면 **잔여는 현금 보유**(추가 매수 금지).
+
+- **유출($F_t<0$)**: **과체중 자산에서만 매도**.
 
 $$
 \Delta_i^{\mathrm{sell}} =
 \begin{cases}
-\dfrac{\lvert d_i\rvert}{S^-}\cdot \min(\lvert F_t\rvert,\ S^-) & i\in I^-,, S^->0[8pt]
-w_i\cdot \lvert F_t\rvert & \text{if } S^-=0 \ (\text{과체중 없음})
+\dfrac{\lvert d_i\rvert}{S^-}\cdot \min(\lvert F_t\rvert, S^-), & \text{if } i\in I^-,\, S^->0, \\[8pt]
+w_i\cdot \lvert F_t\rvert, & \text{if } S^-=0 \ (\text{과체중 없음}).
 \end{cases}
 $$
 
 **출력(리밸런싱 스펙)**
-
-* `rebalancing_spec`:
-
-  * `target_weights`: $\mathbf{w}$
-  * `cash_flow`: $F_t$
-  * `buy_notional[i]`: $\Delta_i^{\mathrm{buy}}$
-  * `sell_notional[i]`: $\Delta_i^{\mathrm{sell}}$
+- `rebalancing_spec`:
+  - `target_weights`: $\mathbf{w}$
+  - `cash_flow`: $F_t$
+  - `buy_notional[i]`: $\Delta_i^{\mathrm{buy}}$
+  - `sell_notional[i]`: $\Delta_i^{\mathrm{sell}}$
 
 **집행(시뮬레이션 연계)**
-
-* **On-Open**에 스탑/신호 예약 체결 후, 위 **권장 규칙**에 따라 현금 범위 내에서 집행한다. 체결가·수수료·라운딩은 기존 규약을 따른다.
+- **On-Open**에 스탑/신호 예약 체결 후, 위 **권장 규칙**에 따라 현금 범위 내에서 집행한다. 체결가·수수료·라운딩은 기존 규약을 따른다.
 
 ---
 
 ## 3) 시뮬레이션
 
 ### 역할/타임라인
-
-* 전략 출력(특징·신호·스탑·사이징 스펙·리밸런싱 스펙)을 **타임라인 규약**에 따라 집행하여 **체결·비용 반영** 후 **산출물 고정**한다. 데이터 정합화/특징/의사결정 재구현은 금지(전략 호출만).
-* **표준 타임라인 규약(단일 정의)**:
-  **신호**는 **Close**($t!-!1$)에서 결정해 **Open**($t$)에 체결, **스탑**은 **Close**($t$)에서 판정해 **Open**($t+1$)에 체결하며, 충돌 시 **스탑 > 신호**이고 **룩어헤드 금지**를 준수한다. (다른 섹션에서는 본 규약을 참조로만 언급)
+- 전략 출력(특징·신호·스탑·사이징 스펙·리밸런싱 스펙)을 **타임라인 규약**에 따라 집행하여 **체결·비용 반영** 후 **산출물 고정**한다. 데이터 정합화/특징/의사결정 재구현은 금지(전략 호출만).
+- **표준 타임라인 규약(단일 정의)**: **신호**는 **Close**($t-1$)에서 결정해 **Open**($t$)에 체결, **스탑**은 **Close**($t$)에서 판정해 **Open**($t+1$)에 체결하며, 충돌 시 **스탑 > 신호**이고 **룩어헤드 금지**를 준수한다. (다른 섹션에서는 본 규약을 참조로만 언급)
 
 ### 집행 순서(On-Open)
-
 1. 전일 예약 **스탑 체결**
 2. 전일 예약 **신호 체결**
 3. **현금흐름 $F_t$ 반영**(입·출금/배당/이자)
@@ -250,60 +231,51 @@ $$
 5. 수수료·슬리피지 반영 및 자본 업데이트
 
 ### 체결·비용·사이징 반영
-
-* 체결가: **매수** $\texttt{Open_eff}(1+\texttt{slip})$, **매도** $\texttt{Open_eff}(1-\texttt{slip})$
-  정의: $\texttt{Open_eff}=\texttt{open_adj}$ (존재 시), 그 외 `open`. **가격 라운딩은 `price_step` 적용**.
-* 수수료: $\lvert \text{체결가} \rvert \times \text{수량} \times \texttt{commission_rate}$.
-* **사이징 계산(On-Open)**
-  위험 예산: $R=f\cdot E$, 스탑 거리(롱): $D=\text{Entry}-\texttt{stop_level}$.
+- 체결가: **매수** $\texttt{Open\_eff}(1+\texttt{slip})$, **매도** $\texttt{Open\_eff}(1-\texttt{slip})$  
+  정의: $\texttt{Open\_eff}=\texttt{open\_adj}$ (존재 시), 그 외 `open`. **가격 라운딩은 `price_step` 적용**, **수량 라운딩은 `lot_step` 적용**.
+- 수수료: $\lvert \text{체결가} \rvert \times \text{수량} \times \texttt{commission\_rate}$.
+- **사이징 계산(On-Open)**  
+  위험 예산: $R=f\cdot E$, 스탑 거리(롱): $D=\texttt{Entry}-\texttt{stop\_level}$.
 
 $$
-Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor
-\quad
-Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot V} \right\rfloor
-\quad
-Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot PV} \right\rfloor
+Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor \\[6pt]
+Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot \texttt{V}} \right\rfloor \\[6pt]
+Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot \texttt{PV}} \right\rfloor
 $$
 
-* 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{\texttt{lot_step}} \Big\rfloor \cdot \texttt{lot_step}$ (**수량 라운딩 = `lot_step`**, **가격 라운딩 = `price_step`**).
-* **규칙:** **$D\le 0 ;\Rightarrow;$ 주문 없음**.
+- 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{\texttt{lot\_step}} \Big\rfloor \cdot \texttt{lot\_step}$ (**수량 라운딩 = `lot_step`**, **가격 라운딩 = `price_step`**).
+- **규칙:** $D \le 0 \Rightarrow$ 주문 없음.
 
 ### 포트폴리오 모드
-
-* 복수 종목 동시 보유를 기본으로 하며, 종목별 **수수료·슬리피지·`lot_step`/`price_step`**·자산군 파라미터(`V`, `PV`)를 적용한다.
-* 리밸런싱 체결은 `reason='rebalance'`로 기록한다.
+- 복수 종목 동시 보유를 기본으로 하며, 종목별 **수수료·슬리피지·`lot_step`/`price_step`**·자산군 파라미터(`\texttt{V}`, `\texttt{PV}`)를 적용한다.
+- 리밸런싱 체결은 `reason='rebalance'`로 기록한다.
 
 ### 기준 통화 평가
-
-* 자본 곡선은 **기준 통화(`base_currency`)**로 산출한다. 가격 통화가 다를 경우 시점별 FX로 환산 후 합산한다.
+- 자본 곡선은 **기준 통화(`base_currency`)**로 산출한다. 가격 통화가 다를 경우 시점별 FX로 환산 후 합산한다.
 
 $$
-E_t=\texttt{Cash}^{\text{base}}*t+\sum_i \texttt{Position}*{i,t}\cdot \Big(P_{i,t}^{\text{local}}\times \texttt{FX}_{i\to \text{base},t}\Big)
+E_t=\texttt{Cash}^{\text{base}}_t+\sum_i \texttt{Position}_{i,t}\cdot \Big(P_{i,t}^{\text{local}}\times \texttt{FX}_{i\to \text{base},t}\Big)
 $$
 
 ### 루프
-
 1. **On-Open**: 표준 순서(**스탑 → 신호 → 현금흐름 → 리밸런싱 → 비용 반영**)에 따라 집행 → 포지션/현금/자본 업데이트 → **거래 로그 기록**
-2. **On-Close**: 특징 갱신(SMA, $\mathrm{prev_low}_N$) → 신호 예약·스탑 판정 → **자본 곡선 스냅샷**
+2. **On-Close**: 특징 갱신(SMA, $\mathrm{prev\_low}_N$) → 신호 예약·스탑 판정(예: $L_t \le \mathrm{prev\_low}_N(t-1)$) → **자본 곡선 스냅샷**
 
 ### 입력/출력 계약
-
-* 입력 스냅샷: `DatetimeIndex[UTC]` 단조증가·중복 없음; 필수 `open, high, low, close`, 권장 `open_adj, high_adj, low_adj, close_adj`(혼용 금지).
-* 전략 결과: 특징(`sma{short}`, `sma{long}`, $\mathrm{prev_low}_N(t)$), 의사결정(`signal_next`, `stop_hit`, `stop_level`), **사이징 스펙**($f, s, V, PV$; 여기서 $s\equiv\texttt{lot_step}$), **리밸런싱 스펙**(**`target_weights`**, **`cash_flow`**, **`buy_notional`**, **`sell_notional`**).
-* 출력(표준화):
-  `trades`(시각, 심볼, 방향, 사유[signal/stop/rebalance], 수량, 체결가, 수수료, 슬리피지, 실현 손익, 체결 후 자본/포지션)
-  `equity_curve`(**기준 통화 기준**, 시각, 자본, 포지션, 누적 수수료/슬리피지, 최대낙폭 등)
-  `metrics`(**기준 통화 기준**, 총수익, MDD, 승률·페이오프, 샤프 등)
+- 입력 스냅샷: `DatetimeIndex[UTC]` 단조증가·중복 없음; 필수 `open, high, low, close`, 권장 `open_adj, high_adj, low_adj, close_adj`(혼용 금지).
+- 전략 결과: 특징(`sma{short}`, `sma{long}`, $\mathrm{prev\_low}_N(t)$), 의사결정(`signal_next`, `stop_hit`, `stop_level`), **사이징 스펙**($f, s, \texttt{V}, \texttt{PV}$; 여기서 $s \equiv \texttt{lot\_step}$), **리밸런싱 스펙**(**`target_weights`**, **`cash_flow`**, **`buy_notional`**, **`sell_notional`**).
+- 출력(표준화):  
+  `trades`(시각, 심볼, 방향, 사유[signal/stop/rebalance], 수량, 체결가, 수수료, 슬리피지, 실현 손익, 체결 후 자본/포지션)  
+  `equity_curve`(**기준 통화 기준**, 시각, 자본, 포지션, 누적 수수료/슬리피지, 최대낙폭 등)  
+  `metrics`(**기준 통화 기준**, 총수익, MDD, 승률·페이오프, 샤프 등)  
   `run_meta`(설정값, `base_currency`, 스냅샷 해시/기간, `instrument_registry_hash`, `cash_flow_source`, `target_weights_source`, 생성 시각·버전)
 
 ### 실패/예외
-
-* **즉시 실패**: 스냅샷 무결성 위반, 타임라인 위반, 룩어헤드 사용.
-* **경고 후 스킵**: `target_weights`/`cash_flow` 누락, 라운딩 불능 등(동일 문구를 데이터·시뮬레이션·검증 섹션에 적용).
+- **즉시 실패**: 스냅샷 무결성 위반, 타임라인 위반, 룩어헤드 사용.
+- **경고 후 스킵**: `target_weights`/`cash_flow` 누락, 라운딩 불능 등(동일 문구를 데이터·시뮬레이션·검증 섹션에 적용).
 
 ### 설정
-
-* 모든 파라미터(`sma_short, sma_long, epsilon, N, f, lot_step, price_step, commission_rate, slip, V, PV, base_currency`)는 **런 구성으로 주입**하고, `run_meta`에 기록한다.
+- 모든 파라미터(`sma_short, sma_long, epsilon, N, f, lot_step, price_step, commission_rate, slip, V, PV, base_currency`)는 **런 구성으로 주입**하고, `run_meta`에 기록한다.
 
 ---
 
