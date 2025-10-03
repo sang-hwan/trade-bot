@@ -1,47 +1,149 @@
-# engine.py
+# simulation/engine.py
 """
-백테스트 엔진(롱 온리·0/1 보유).
-- 타임라인: On-Open 집행(스탑 우선) → On-Close 판정
-- 룩어헤드 금지: 신호는 Close(t-1) 결정→Open(t) 집행, 스탑은 Close(t) 판정→Open(t+1) 집행
-- SSOT: 전략(신호/스탑/스펙)과 체결/수수료/사이징 유틸만 호출(재구현 금지)
+Backtest Engine (single-asset, long-only)
+
+타임라인: On-Open에 [Stop → Signal → (Rebalance)], Stop > Signal, 룩어헤드 금지.
+가격 규약: *_adj 존재 시 우선 사용(혼용 금지).
+라운딩: price_step/lot_step 적용. 라운딩 불능(None) → 해당 집행 스킵(주문 없음).
+
+출력: trades(DataFrame), equity_curve(DataFrame), metrics(dict), run_meta(dict).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 
-# 전략: 피처/신호/스탑/사이징 스펙
-from strategy.signals import sma_cross_long_only
-from strategy.stops import donchian_stop_long
-from strategy.sizing_spec import build_fixed_fractional_spec
+from .execution import open_eff  # 체결가 산출(조정가·슬리피지·틱 라운딩)
 
-# 시뮬레이션 유틸: 체결/수수료, 온-오픈 사이징
-from simulation.execution import open_eff, close_eff, calc_commission, apply_buy, apply_sell
-from simulation.sizing_on_open import size_from_spec
+# 내부 유틸
 
-
-# ---------- 스냅샷 검증 ----------
-def _validate_snapshot(df: pd.DataFrame) -> None:
-    idx = df.index
-    if not isinstance(idx, pd.DatetimeIndex):
-        raise ValueError("index must be DatetimeIndex")
-    if idx.tz is None or str(idx.tz) != "UTC":
-        raise ValueError("index timezone must be UTC")
-    if not idx.is_monotonic_increasing:
-        raise ValueError("index must be strictly increasing (no reordering)")
-    if idx.has_duplicates:
-        raise ValueError("index must not contain duplicates")
+def _col(df: pd.DataFrame, base: str) -> str:
+    """조정가 우선 컬럼 선택."""
+    return f"{base}_adj" if f"{base}_adj" in df.columns else base
 
 
-# ---------- 로그 레코드 ----------
+def _series_1d(df: pd.DataFrame, col: str) -> pd.Series:
+    """df[col]이 DataFrame로 반환되거나 dtype이 object인 경우에도 1-D 수치 Series 보장."""
+    if col not in df.columns:
+        raise KeyError(f"'{col}' not in DataFrame")
+    s = df[col]
+    if isinstance(s, pd.DataFrame):
+        s = s.iloc[:, -1]
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _mdd(equity: pd.Series) -> float:
+    if equity.empty:
+        return 0.0
+    peak = equity.cummax()
+    dd = equity / peak - 1.0
+    return float(dd.min())
+
+
+def _metrics(equity: pd.Series, initial_equity: float) -> Dict[str, Any]:
+    last = float(equity.iloc[-1]) if len(equity) else float(initial_equity)
+    total_return = (last / float(initial_equity)) - 1.0 if initial_equity else np.nan
+    return {
+        "initial_equity": float(initial_equity),
+        "final_equity": last,
+        "total_return": float(total_return),
+        "mdd": _mdd(equity),
+    }
+
+
+def _run_meta(
+    *,
+    df: pd.DataFrame,
+    initial_equity: float,
+    f: float,
+    N: int,
+    epsilon: float,
+    lot_step: float,
+    commission_rate: float,
+    slip: float,
+    V: Optional[float],
+    PV: Optional[float],
+    price_step: float,
+    base_currency: Optional[str],
+    snapshot_meta: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """리포트 스키마(상단 메타 포함)."""
+    price_cols = {"open": _col(df, "open"), "close": _col(df, "close")}
+    rm: Dict[str, Any] = {
+        "engine_mode": "single-asset-long-only",
+        "initial_equity": float(initial_equity),
+        "price_columns_used": price_cols,
+        # 상단 메타(값이 없어도 키는 존재)
+        "base_currency": base_currency,
+        "cash_flow_source": None,
+        "target_weights_source": None,
+        "instrument_registry_hash": (snapshot_meta or {}).get("instrument_registry_hash"),
+        "params": {
+            "f": float(f),
+            "N": int(N),
+            "epsilon": float(epsilon),
+            "lot_step": float(lot_step),
+            "price_step": float(price_step),
+            "commission_rate": float(commission_rate),
+            "slip": float(slip),
+            "V": V,
+            "PV": PV,
+        },
+    }
+    if snapshot_meta:
+        rm["snapshot"] = snapshot_meta
+    return rm
+
+
+# 전략 스펙(피처/신호/스탑) — 최소 구현
+
+def _build_features(df: pd.DataFrame, sma_short: int = 10, sma_long: int = 50, N: int = 20) -> pd.DataFrame:
+    """SMA(short/long), Donchian prev_low_N(t-1)/prev_low_N(t)."""
+    out = df.copy()
+    c = _col(df, "close")
+    l = _col(df, "low")
+
+    close_s = _series_1d(df, c)
+    low_s   = _series_1d(df, l)
+    
+    out["sma_short"] = close_s.rolling(sma_short, min_periods=sma_short).mean()
+    out["sma_long"]  = close_s.rolling(sma_long,  min_periods=sma_long ).mean()
+
+    prev_low_tminus1 = low_s.shift(1).rolling(N, min_periods=N).min()
+    prev_low_t       = low_s.rolling(N, min_periods=N).min()
+    out["prev_low_N_tminus1"] = prev_low_tminus1
+    out["prev_low_N"] = prev_low_t
+    return out
+
+
+def _build_decisions(df: pd.DataFrame, epsilon: float) -> pd.DataFrame:
+    """signal_next(t): Close(t-1) 결정 → Open(t) 집행."""
+    out = df.copy()
+    decided = (df["sma_short"] - df["sma_long"]) > float(epsilon)
+    out["signal_next"] = decided.shift(1).astype("Int8")
+    return out
+
+
+def _build_stop_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """Close(t)에서 L_t ≤ prev_low_N(t-1)면 stop_hit(t)=True, Open(t+1) 집행."""
+    out = df.copy()
+    l = _col(df, "low")
+    low_s = _series_1d(df, l)
+    out["stop_hit"] = (low_s <= df["prev_low_N_tminus1"])
+    return out
+
+
+# 엔진
+
 @dataclass
 class Trade:
     ts: pd.Timestamp
-    side: str        # 'buy' | 'sell'
-    reason: str      # 'signal' | 'stop'
+    side: str            # "buy" | "sell"
+    reason: str          # "signal" | "stop" | "rebalance"
     qty: float
     price: float
     commission: float
@@ -51,130 +153,181 @@ class Trade:
     position_after: float
 
 
-# ---------- 엔진 ----------
-def run(
+def run(  # noqa: PLR0913 (명시적 인자 유지)
     df: pd.DataFrame,
     *,
     f: float,
     N: int,
-    epsilon: float = 0.0,
-    lot_step: float = 1.0,
-    commission_rate: float = 0.0,
-    slip: float = 0.0,
-    V: float | None = None,
-    PV: float | None = None,
+    epsilon: float,
+    lot_step: float,
+    commission_rate: float,
+    slip: float,
+    V: Optional[float] = None,
+    PV: Optional[float] = None,
     initial_equity: float = 1_000_000.0,
-) -> dict[str, Any]:
+    price_step: float = 0.0,
+    base_currency: Optional[str] = None,
+    snapshot_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
-    공개 API
-    - 입력: DatetimeIndex[UTC] 스냅샷(불변 가정)
-    - 출력: {'trades': DataFrame, 'equity_curve': DataFrame, 'metrics': dict, 'run_meta': dict}
+    단일종목 롱온리 엔진. Stop>Signal, 라운딩 불능은 '주문 없음'으로 스킵.
     """
     if df.empty:
-        raise ValueError("empty dataframe")
+        equity_curve = pd.DataFrame(index=pd.DatetimeIndex([], tz="UTC"), columns=["equity"]).fillna(0.0)
+        return {
+            "trades": pd.DataFrame(),
+            "equity_curve": equity_curve,
+            "metrics": _metrics(equity_curve["equity"], initial_equity),
+            "run_meta": _run_meta(
+                df=df,
+                initial_equity=initial_equity,
+                f=f,
+                N=N,
+                epsilon=epsilon,
+                lot_step=lot_step,
+                commission_rate=commission_rate,
+                slip=slip,
+                V=V,
+                PV=PV,
+                price_step=price_step,
+                base_currency=base_currency,
+                snapshot_meta=snapshot_meta,
+            ),
+        }
 
-    # 컬럼 유일성/단일 레벨 가드(스냅샷/루프 진입 전)
-    if isinstance(df.columns, pd.MultiIndex) or df.columns.duplicated().any():
-        raise ValueError("Engine requires unique, single-level columns.")
-
-    _validate_snapshot(df)
-    df = df.copy()  # 입력 불변 보장
-
-    # 전략 산출물
-    signal_next = sma_cross_long_only(df, short=10, long=50, epsilon=epsilon)
-    stop_df = donchian_stop_long(df, N=N)
-    sizing_spec = build_fixed_fractional_spec(df, N=N, f=f, lot_step=lot_step, V=V, PV=PV)
+    # 피처/신호/스탑
+    sma_short, sma_long = 10, 50
+    x = _build_features(df, sma_short=sma_short, sma_long=sma_long, N=N)
+    x = _build_decisions(x, epsilon=epsilon)
+    x = _build_stop_flags(x)
 
     # 상태
-    cash = float(initial_equity)
-    qty = 0.0
-    avg_entry = 0.0
-    equity = float(initial_equity)
-    pending_exit = False
+    cash: float = float(initial_equity)
+    qty: float = 0.0
+    avg_entry: float = 0.0
+    pending_exit: bool = False  # 전일 stop 판정 결과
 
-    # 로그
-    trades: list[Trade] = []
-    eq_rows: list[dict[str, Any]] = []
+    trades: List[Trade] = []
+    equity_series: List[float] = []
 
-    # MDD
-    peak = equity
-    mdd = 0.0
+    close_col = _col(x, "close")
 
-    for ts, row in df.iterrows():
-        # ===== On-Open: 집행(스탑 우선) =====
+    idx = x.index
+    for i, ts in enumerate(idx):
+        row = x.iloc[i]
+
+        # On-Open: 1) 스탑 체결
+        skip_signal_today = False
         if pending_exit and qty > 0.0:
-            sell_qty = qty
-            exit_price = open_eff(row, slip=slip, side="sell")
-            cash, commission, realized = apply_sell(cash, avg_entry, exit_price, sell_qty, commission_rate)
-            qty = 0.0
-            avg_entry = 0.0
-            trades.append(Trade(ts, "sell", "stop", sell_qty, exit_price, commission, slip, realized, cash, qty))
-        pending_exit = False
-
-        # 진입(포지션 없음 & signal_next[t]==1)
-        if qty == 0.0:
-            sig = signal_next.get(ts)
-            if pd.notna(sig) and int(sig) == 1 and ts in sizing_spec.index:
-                spec = sizing_spec.loc[ts]
-                if pd.notna(spec.get("stop_level", pd.NA)):
-                    entry_price = open_eff(row, slip=slip, side="buy")
-                    sized = size_from_spec(
-                        entry_price,
-                        equity,  # 직전 Close 기준 자본
-                        f=float(spec["f"]),
-                        stop_level=float(spec["stop_level"]),
-                        lot_step=float(spec["lot_step"]),
-                        V=None if pd.isna(spec.get("V", pd.NA)) else float(spec["V"]),
-                        PV=None if pd.isna(spec.get("PV", pd.NA)) else float(spec["PV"]),
+            exit_price = open_eff(row, slip=slip, side="sell", price_step=price_step)
+            if exit_price is None:
+                # 라운딩 불능 → 오늘 주문 없음(Stop > Signal 위해 신호도 스킵)
+                skip_signal_today = True
+            else:
+                qty_executed = qty  # 실제 청산 수량 기록
+                commission = abs(exit_price * qty_executed) * commission_rate
+                realized = (exit_price - avg_entry) * qty_executed - commission
+                cash += qty_executed * exit_price - commission
+                qty = 0.0
+                avg_entry = 0.0
+                trades.append(
+                    Trade(
+                        ts=ts,
+                        side="sell",
+                        reason="stop",
+                        qty=float(qty_executed),
+                        price=float(exit_price),
+                        commission=float(commission),
+                        slip=float(slip),
+                        realized_pnl=float(realized),
+                        equity_after=float(cash),
+                        position_after=float(0.0),
                     )
-                    Q_exec = float(sized["Q_exec"])
-                    if Q_exec > 0.0:
-                        commission = calc_commission(entry_price, Q_exec, commission_rate)
-                        total_cost = entry_price * Q_exec + commission
-                        if total_cost <= cash:
-                            cash, commission, total_cost = apply_buy(cash, entry_price, Q_exec, commission_rate)
-                            qty = Q_exec
-                            avg_entry = entry_price
+                )
+            pending_exit = (qty > 0.0) and (exit_price is None)
+
+        # On-Open: 2) 신호 체결
+        if not skip_signal_today and qty == 0.0 and bool(row.get("signal_next", 0)):
+            entry_px = open_eff(row, slip=slip, side="buy", price_step=price_step)
+            if entry_px is not None:
+                E_open = cash  # 포지션 없음 가정
+                stop_level = float(row.get("prev_low_N_tminus1", np.nan))
+                D = float(entry_px) - stop_level if np.isfinite(stop_level) else np.nan
+                if np.isfinite(D) and D > 0.0 and f > 0.0 and lot_step > 0.0:
+                    Q = np.floor((f * E_open) / D)
+                    Q_exec = np.floor(Q / lot_step) * lot_step
+                    if Q_exec > 0:
+                        notional = Q_exec * entry_px
+                        commission = abs(notional) * commission_rate
+                        if cash >= (notional + commission):
+                            cash -= notional + commission
+                            qty += Q_exec
+                            avg_entry = entry_px
                             trades.append(
-                                Trade(ts, "buy", "signal", Q_exec, entry_price, commission, slip, 0.0, cash + qty * entry_price, qty)
+                                Trade(
+                                    ts=ts,
+                                    side="buy",
+                                    reason="signal",
+                                    qty=float(Q_exec),
+                                    price=float(entry_px),
+                                    commission=float(commission),
+                                    slip=float(slip),
+                                    realized_pnl=float(0.0),
+                                    equity_after=float(cash + qty * entry_px),
+                                    position_after=float(qty),
+                                )
                             )
+                # D<=0, 라운딩 불능, 현금부족 시 주문 없음
 
-        # ===== On-Close: 판정/스냅샷 =====
-        close_px = close_eff(row)
-        equity = cash + qty * close_px
-
-        sh = stop_df["stop_hit"].get(ts)
-        if pd.notna(sh) and bool(sh) and qty > 0.0:
+        # On-Close: 스탑 판정 예약(다음날 Open에 집행)
+        low_col = _col(x, "low")
+        low_t = float(row[low_col])
+        prev_low = float(row.get("prev_low_N_tminus1", np.nan))
+        if qty > 0.0 and np.isfinite(prev_low) and (low_t <= prev_low):
             pending_exit = True
 
-        peak = max(peak, equity)
-        dd = 0.0 if peak == 0.0 else (equity - peak) / peak
-        mdd = min(mdd, dd)
+        # Equity 스냅샷(*_adj 우선)
+        close_px = float(row[close_col])
+        equity_today = cash + qty * close_px
+        equity_series.append(equity_today)
 
-        eq_rows.append(
-            {"ts": ts, "equity": equity, "position": qty, "cash": cash, "close": close_px,
-             "pending_exit_next_open": pending_exit, "peak": peak, "drawdown": dd}
-        )
+    equity_curve = pd.DataFrame({"equity": equity_series}, index=idx)
+    metrics = _metrics(equity_curve["equity"], initial_equity)
 
-    # ---- 출력 고정 ----
-    trades_df = (
-        pd.DataFrame([t.__dict__ for t in trades]).sort_values("ts").reset_index(drop=True) if trades else pd.DataFrame()
+    trades_df = pd.DataFrame([t.__dict__ for t in trades]) if trades else pd.DataFrame(
+        columns=[
+            "ts",
+            "side",
+            "reason",
+            "qty",
+            "price",
+            "commission",
+            "slip",
+            "realized_pnl",
+            "equity_after",
+            "position_after",
+        ]
     )
-    equity_curve = pd.DataFrame(eq_rows).set_index("ts") if eq_rows else pd.DataFrame()
 
-    total_return = 0.0 if equity_curve.empty else (float(equity_curve["equity"].iloc[-1]) / initial_equity - 1.0)
-    metrics = {"total_return": float(total_return), "mdd": float(mdd), "trades": int(len(trades_df))}
-    run_meta = {
-        "f": f,
-        "N": N,
-        "epsilon": epsilon,
-        "lot_step": lot_step,
-        "commission_rate": commission_rate,
-        "slip": slip,
-        "V": V,
-        "PV": PV,
-        "initial_equity": initial_equity,
-        "version": "engine.v1.3",
+    run_meta = _run_meta(
+        df=df,
+        initial_equity=initial_equity,
+        f=f,
+        N=N,
+        epsilon=epsilon,
+        lot_step=lot_step,
+        commission_rate=commission_rate,
+        slip=slip,
+        V=V,
+        PV=PV,
+        price_step=price_step,
+        base_currency=base_currency,
+        snapshot_meta=snapshot_meta,
+    )
+
+    return {
+        "trades": trades_df,
+        "equity_curve": equity_curve,
+        "metrics": metrics,
+        "run_meta": run_meta,
     }
-
-    return {"trades": trades_df, "equity_curve": equity_curve, "metrics": metrics, "run_meta": run_meta}

@@ -1,20 +1,22 @@
 # main.py
 from __future__ import annotations
 
-# ── 표준 라이브러리 (우선 사용)
+# 표준 라이브러리(우선)
 import argparse
 import datetime as _dt
 import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
-# ── 서드파티
+# 서드파티
 import pandas as pd
 
-# ── 프로젝트 모듈
+# 프로젝트 모듈
 from data.collect import collect
 from data.quality_gate import validate as qv
+from data.quality_gate import validate_meta as qv_meta
 from data.adjust import apply as adj
 from data.snapshot import write as snap
 import simulation.engine as eng
@@ -29,7 +31,7 @@ def _safe_name(symbol: str) -> str:
 
 
 def _normalize_for_upbit(symbol: str, interval: str) -> tuple[str, str, dict[str, str]]:
-    """Upbit 입력 정규화: 'BTC/KRW'·'BTC-KRW'→'KRW-BTC', 인터벌 '1d/1w/1M'→'day/week/month'."""
+    """Upbit 입력 정규화: 'BTC/KRW'·'BTC-KRW'→'KRW-BTC', '1D/1W/1M'→'day/week/month'."""
     warns: dict[str, str] = {}
     s = symbol.upper().replace(" ", "")
     if "/" in s:
@@ -53,7 +55,8 @@ def _compose_out_dir(root: Path, runs_dir: str, source: str, symbol: str, interv
     if out_dir:
         p = Path(out_dir)
         return p if p.is_absolute() else (root / out_dir)
-    stamp = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    # UTC 타임스탬프로 러닝 디렉터리 구성
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
     return root / runs_dir / f"{stamp}_{source}_{_safe_name(symbol)}_{interval}"
 
 
@@ -75,28 +78,82 @@ def run_once(
     PV: float | None,
     snapshot: bool,
     out_dir: Path,
-) -> dict:
-    """공개 API: 수집→검증→보정→엔진. 스냅샷은 보조 기능이므로 실패 시 경고만 출력."""
+    # 메타/환산 입력 (스냅샷·검증·수집에 사용)
+    base_currency: str,
+    calendar_id: str | None,
+    fx_source: str | None,
+    fx_source_ts: str | None,
+    instrument_registry_hash: str | None,
+    # 라운딩 메타(검증 및 엔진 집행에 적용)
+    price_step: float,
+) -> dict[str, Any]:
+    """수집→정합성→조정→(스냅샷)→엔진→산출물 저장."""
     warns: dict[str, str] = {}
     src = source.lower()
     sym, iv = symbol, interval
     if src == "upbit":
         sym, iv, warns = _normalize_for_upbit(symbol, interval)
+        if not calendar_id:
+            calendar_id = "24x7"
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 수집(CollectResult) → DataFrame 추출
-    collected = collect(src, sym, start, end, iv)
+    # 1) 수집
+    collected = collect(
+        src,
+        sym,
+        start=start,
+        end=end,
+        interval=iv,
+        base_currency=base_currency,
+        calendar_id=calendar_id,
+    )
     df = collected.dataframe
+    local_ccy = (getattr(collected, "meta", {}) or {}).get("price_currency")
+
+    # 2) 정합성 검증
     qv(df)
+
+    # 3) 완전 조정(*_adj 생성 및 우선 사용)
     df = adj(df)
 
-    snapshot_meta = None
+    # 4) 메타 검증(steps/calendar/FX)
+    try:
+        qv_meta(
+            {
+                "base_currency": base_currency,
+                "price_currency": local_ccy,
+                "calendar_id": calendar_id,
+                "lot_step": lot_step,
+                "price_step": price_step,
+                "fx_source": fx_source,
+                "fx_source_ts": fx_source_ts,
+            },
+            require_fx=bool(local_ccy and base_currency and local_ccy != base_currency),
+            require_calendar=True,
+            require_steps=price_step > 0.0,
+        )
+    except Exception as e:
+        print(f"[meta warning] {e}", file=sys.stderr)
+
+    # 5) 스냅샷 고정(선택)
+    snapshot_meta: dict[str, Any] | None = None
     if snapshot:
         try:
             smeta = snap(
-                df, source=src, symbol=sym, start=start, end=end, interval=iv,
-                out_dir=str(out_dir), timezone="UTC"
+                df,
+                source=src,
+                symbol=sym,
+                start=start,
+                end=end,
+                interval=iv,
+                out_dir=str(out_dir),
+                timezone="UTC",
+                base_currency=base_currency,
+                fx_source=fx_source,
+                fx_source_ts=fx_source_ts,
+                calendar_id=calendar_id or "",
+                instrument_registry_hash=instrument_registry_hash,
             )
             snapshot_meta = asdict(smeta)
             (out_dir / "snapshot_meta.json").write_text(
@@ -105,6 +162,7 @@ def run_once(
         except Exception as e:
             print(f"[snapshot skipped] {e}", file=sys.stderr)
 
+    # 6) 엔진 실행(단일 종목; 기준 통화 환산은 데이터/스냅샷 단계 완료 가정)
     res = eng.run(
         df,
         f=f,
@@ -116,16 +174,24 @@ def run_once(
         V=V,
         PV=PV,
         initial_equity=initial_equity,
+        price_step=price_step,
+        base_currency=base_currency,
+        snapshot_meta=snapshot_meta,
     )
 
-    pd.DataFrame(res.get("trades", [])).to_csv(out_dir / "trades.csv", index=False)
-    pd.DataFrame(res.get("equity_curve", [])).to_csv(out_dir / "equity_curve.csv", index=False)
+    # 7) 산출물 저장
+    trades_obj = res.get("trades", pd.DataFrame())
+    equity_obj = res.get("equity_curve", pd.DataFrame())
+    trades_df = trades_obj if isinstance(trades_obj, pd.DataFrame) else pd.DataFrame(trades_obj)
+    equity_df = equity_obj if isinstance(equity_obj, pd.DataFrame) else pd.DataFrame(equity_obj)
 
-    # 스냅샷 메타를 run_meta에 비파괴 병합
+    trades_df.to_csv(out_dir / "trades.csv", index=False)
+    equity_df.to_csv(out_dir / "equity_curve.csv", index=True)
+
+    # run_meta 보강(엔진이 이미 기록했으면 setdefault로 보존)
     run_meta = dict(res.get("run_meta", {}))
     if snapshot_meta:
-        for k, v in snapshot_meta.items():
-            run_meta.setdefault(k, v)
+        run_meta.setdefault("snapshot", snapshot_meta)
 
     (out_dir / "metrics.json").write_text(
         json.dumps(res.get("metrics", {}), ensure_ascii=False, indent=2), encoding="utf-8"
@@ -162,6 +228,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--N", type=int, default=20)
     p.add_argument("--f", type=float, default=0.01)
     p.add_argument("--lot_step", type=float, default=1.0)
+    p.add_argument("--price_step", type=float, default=0.0)  # 0이면 비활성
     p.add_argument("--commission_rate", type=float, default=0.0005)
     p.add_argument("--slip", type=float, default=0.0005)
     p.add_argument("--epsilon", type=float, default=0.0)
@@ -169,6 +236,13 @@ def parse_args(argv=None) -> argparse.Namespace:
 
     p.add_argument("--V", type=float)
     p.add_argument("--PV", type=float)
+
+    # 스냅샷/메타 입력
+    p.add_argument("--base_currency", type=str, default="USD")
+    p.add_argument("--calendar_id", type=str, default=None)
+    p.add_argument("--fx_source", type=str, default=None)
+    p.add_argument("--fx_source_ts", type=str, default=None)
+    p.add_argument("--instrument_registry_hash", type=str, default=None)
 
     p.add_argument("--snapshot", action="store_true")
     p.add_argument("--out_dir")
@@ -198,10 +272,16 @@ def main(argv=None) -> int:
             PV=args.PV,
             snapshot=args.snapshot,
             out_dir=out_dir,
+            base_currency=args.base_currency,
+            calendar_id=args.calendar_id,
+            fx_source=args.fx_source,
+            fx_source_ts=args.fx_source_ts,
+            instrument_registry_hash=args.instrument_registry_hash,
+            price_step=args.price_step,
         )
         return 0
     except Exception as e:
-        # 최상위 한정: 종료 코드 반영용
+        # 종료 코드 반영용 최상위 처리
         print(f"[ERROR] {e}", file=sys.stderr)
         return 1
 

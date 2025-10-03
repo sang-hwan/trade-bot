@@ -23,7 +23,7 @@
 
 * 조정가: `*_adj` 컬럼이 존재하면 **항상 우선 사용**(혼용 금지).
 
-* 기호 매핑: $O \to \texttt{open}$, $H \to \texttt{high}$, $L \to \texttt{low}$, $C \to \texttt{close}$, $\mathrm{AdjClose} \to \texttt{AdjClose}$.
+* 기호 매핑: $O \to \texttt{open}$, $H \to \texttt{high}$, $L \to \texttt{low}$, $C \to \texttt{close}$, $\texttt{AdjClose} \to \texttt{AdjClose}$.
 
 * 시계열 표기:
 
@@ -75,11 +75,17 @@ $$
 - **메타 검증 항목**: `lot_step > 0`, `price_step > 0`, `calendar_id` 키 일치, 해당 시점 **FX 레이트 존재**(부재 시 즉시 실패).
 
 ### 완전 조정
-- 조정 계수 $a_t=\dfrac{\mathrm{AdjClose}_t}{\mathrm{Close}_t}$로 `open_adj, high_adj, low_adj, close_adj`를 생성합니다(미제공 시 $a_t=1.0$).
+- 조정 계수 $a_t=\dfrac{\texttt{AdjClose}_t}{\texttt{Close}_t}$로 `open_adj, high_adj, low_adj, close_adj`를 생성합니다(미제공 시 $a_t=1.0$).
 - 이후 단계에서 `*_adj`가 존재하면 **항상 우선 사용**합니다(혼용 금지).
 
 ### 기준 통화 환산·세션/캘린더 메타
 - 가격 통화가 기준 통화와 다를 경우, **해당 시점 FX를 곱하거나(현지→기준 통화) 나누는 규약을 한 문장으로 명시**하여 평가·손익을 **기준 통화로 환산**합니다.
+- **표준(한 줄 정의)**: 로컬 통화가 $L$, 기준 통화가 $B$일 때,
+
+$$
+P^{(B)}_t = P^{(L)}_t \times \texttt{FX}_{L\to B,t}.
+$$
+
 - 자산별 **`calendar_id`**를 스냅샷에 연결하고, 시뮬레이션의 타임라인 검증 기준으로 사용합니다.
 
 ### 스냅샷 고정
@@ -87,6 +93,7 @@ $$
 - **메타데이터**에는 다음을 포함합니다:  
   `source, symbol, start, end, interval, rows, columns, snapshot_path, snapshot_sha256, collected_at, timezone, base_currency, fx_source, fx_source_ts, calendar_id, instrument_registry_hash`.
 - 스냅샷 해시(`snapshot_sha256`)로 **재현성**을 고정합니다.
+- **주의**: 인덱스는 **항상 UTC**를 유지하며, `timezone`은 **시장/캘린더 설명용 메타**입니다.
 
 ---
 
@@ -112,7 +119,8 @@ $$
 \mathrm{SMA}_n(t) = \mathrm{SMA}_n(t-1) + \frac{P_t - P_{t-n}}{n}
 $$
 
-- 입력: `close_adj`(우선), 없으면 `close`.
+- 여기서 $P_t$는 $\texttt{close\_adj}$ (우선, 부재 시 $\texttt{close}$)를 의미한다.
+- 입력: \texttt{close\_adj}(우선), 없으면 \texttt{close}.
 - 윈도 경계 전 구간은 `NaN`(의사결정 금지).
 
 **Donchian 이전 N-저가 기준선 (prev_low_N)**
@@ -121,7 +129,7 @@ $$
 \mathrm{prev\_low}_N(t-1) = \min_{0 \le i < N} L_{t-1-i}
 $$
 
-- 입력: `low_adj`(우선), 없으면 `low`.
+- 입력: \texttt{low\_adj}(우선), 없으면 \texttt{low}.
 - 초기 $t<N$ 구간은 `NaN`.
 
 ### 2.2 의사결정
@@ -142,34 +150,34 @@ $$
 
 **B) 스탑 — Donchian N-저가 이탈(롱 기준)**
 
-- 판정: **Close** ($t$) 에서 $L_t \le \mathrm{prev\_low}_N(t-1)$.
+- 판정: **Close** ($t$)에서 $L_t \le \mathrm{prev\_low}_N(t-1)$.
 - 체결: **Open** ($t+1$).
-- 산출: `stop_hit` $\in \{\mathrm{True}, \mathrm{False}\}$, `stop_level` $=\mathrm{prev\_low}_N(t)$.
+- 산출: \texttt{stop\_hit} $\in \{\texttt{True}, \texttt{False}\}$, \ \ \texttt{stop\_level} $=\mathrm{prev\_low}_N(t)$.
 
 ### 2.3 사이징 — Fixed Fractional(스펙 산출)
 
-- 전략은 **룩어헤드 방지**를 위해 최종 수량을 계산하지 않고, 다음 **사이징 스펙**을 반환한다: 위험 비율 $f$, 스탑 레벨 `stop_level`, 수량 라운딩 단위 $s$ (**$s \equiv \texttt{lot\_step}$**), 자산군 파라미터(예: 선물 승수 $V$, FX pip 값 $PV$ 등). **가격 라운딩은 `price_step`로 별도 처리**한다.
-- 실제 위험 예산 $R=f\cdot E$, 스탑 거리(롱) $D=\text{Entry}-\texttt{stop\_level}$, 수량 $Q$ 및 실행 수량 $Q_{\text{exec}}$ 계산은 **시뮬레이션 On-Open**에서 수행한다.
+- 전략은 **룩어헤드 방지**를 위해 최종 수량을 계산하지 않고, 다음 **사이징 스펙**을 반환한다: 위험 비율 $f$, 스탑 레벨 $\texttt{stop\_level}$, 수량 라운딩 단위 $s$ (여기서 $s \equiv \texttt{lot\_step}$), 자산군 파라미터(예: 선물 승수 $\texttt{V}$, FX pip 값 $\texttt{PV}$ 등). 가격 라운딩은 $\texttt{price\_step}$로 별도 처리한다.
+- 실제 위험 예산 $R=f\cdot E$, 스탑 거리(롱) $D=\texttt{Entry}-\texttt{stop\_level}$, 수량 $Q$ 및 실행 수량 $Q_{\text{exec}}$ 계산은 **시뮬레이션 On-Open**에서 수행한다.
 
 $$
 Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor
 $$
 
 $$
-Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot V} \right\rfloor
+Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot \texttt{V}} \right\rfloor
 $$
 
 $$
-Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot PV} \right\rfloor
+Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\texttt{pips}}\cdot \texttt{PV}} \right\rfloor
 $$
 
-- 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{s} \Big\rfloor \cdot s$ (**$s \equiv \texttt{lot\_step}$**).
-- **규칙:** $D \le 0 \Rightarrow$ 주문 없음. (**`lot_step` 미만** 또는 **`price_step` 라운딩 불능**일 때도 주문 없음)
+- 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{s} \Big\rfloor \cdot s$ (여기서 $s \equiv \texttt{lot\_step}$).
+- **규칙:** $D \le 0 \Rightarrow$ 주문 없음. (**\texttt{lot\_step} 미만** 또는 **\texttt{price\_step}** 라운딩 불능일 때도 주문 없음)
 
 ### 2.4 리밸런싱 — 현금흐름 리밸런싱 (Cash-Flow Rebalancing)
 
-**목표**
-- 외부 **순현금흐름 $F_t$**(배당/이자/입출금)를 이용해 **불필요한 매도 없이** 목표 비중 $\mathbf{w}$에 **단순·일관되게** 근접한다.
+**목표**  
+외부 **순현금흐름 $F_t$**(배당/이자/입출금)를 이용해 **불필요한 매도 없이** 목표 비중 $\mathbf{w}$에 **단순·일관되게** 근접한다.
 
 **입력**
 - 전일 평가액: 각 자산 $V_i(t-1)$, 총액 $P_{t-1}=\sum_i V_i(t-1)$
@@ -206,14 +214,14 @@ w_i\cdot \lvert F_t\rvert, & \text{if } S^-=0 \ (\text{과체중 없음}).
 $$
 
 **출력(리밸런싱 스펙)**
-- `rebalancing_spec`:
-  - `target_weights`: $\mathbf{w}$
-  - `cash_flow`: $F_t$
-  - `buy_notional[i]`: $\Delta_i^{\mathrm{buy}}$
-  - `sell_notional[i]`: $\Delta_i^{\mathrm{sell}}$
+- \texttt{rebalancing\_spec}:
+  - \texttt{target\_weights}: $\mathbf{w}$
+  - \texttt{cash\_flow}: $F_t$
+  - \texttt{buy\_notional[i]}: $\Delta_i^{\mathrm{buy}}$
+  - \texttt{sell\_notional[i]}: $\Delta_i^{\mathrm{sell}}$
 
-**집행(시뮬레이션 연계)**
-- **On-Open**에 스탑/신호 예약 체결 후, 위 **권장 규칙**에 따라 현금 범위 내에서 집행한다. 체결가·수수료·라운딩은 기존 규약을 따른다.
+**집행(시뮬레이션 연계)**  
+**On-Open**에 스탑/신호 예약 체결 후, 위 **권장 규칙**에 따라 현금 범위 내에서 집행한다. 체결가·수수료·라운딩은 기존 규약을 따른다. 또한 시뮬레이션의 \texttt{reason} 값은 \texttt{signal}, \texttt{stop}, \texttt{rebalance}로 **소문자 고정**한다.
 
 ---
 
@@ -231,27 +239,43 @@ $$
 5. 수수료·슬리피지 반영 및 자본 업데이트
 
 ### 체결·비용·사이징 반영
-- 체결가: **매수** $\texttt{Open\_eff}(1+\texttt{slip})$, **매도** $\texttt{Open\_eff}(1-\texttt{slip})$  
-  정의: $\texttt{Open\_eff}=\texttt{open\_adj}$ (존재 시), 그 외 `open`. **가격 라운딩은 `price_step` 적용**, **수량 라운딩은 `lot_step` 적용**.
+- 체결가: **매수** $\texttt{Open\_eff}(1+\texttt{slip})$, **매도** $\texttt{Open\_eff}(1-\texttt{slip})$
+
+$$
+\texttt{Open\_eff}=\texttt{open\_adj}\ \ (\text{존재 시}),\quad \text{그 외}\ \ \texttt{open}.
+$$
+
+- **가격 라운딩은** `price_step` **적용**, **수량 라운딩은** `lot_step` **적용**.
 - 수수료: $\lvert \text{체결가} \rvert \times \text{수량} \times \texttt{commission\_rate}$.
 - **사이징 계산(On-Open)**  
   위험 예산: $R=f\cdot E$, 스탑 거리(롱): $D=\texttt{Entry}-\texttt{stop\_level}$.
 
 $$
-Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor \\[6pt]
-Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot \texttt{V}} \right\rfloor \\[6pt]
-Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\mathrm{pips}}\cdot \texttt{PV}} \right\rfloor
+Q_{\text{stock/coin}}=\left\lfloor \frac{R}{D} \right\rfloor
+$$
+
+$$
+Q_{\text{fut}}=\left\lfloor \frac{R}{D\cdot \texttt{V}} \right\rfloor
+$$
+
+$$
+Q_{\text{FX}}=\left\lfloor \frac{R}{D_{\texttt{pips}}\cdot \texttt{PV}} \right\rfloor
 $$
 
 - 실행 수량(하향 라운딩): $Q_{\text{exec}}=\Big\lfloor \dfrac{Q}{\texttt{lot\_step}} \Big\rfloor \cdot \texttt{lot\_step}$ (**수량 라운딩 = `lot_step`**, **가격 라운딩 = `price_step`**).
 - **규칙:** $D \le 0 \Rightarrow$ 주문 없음.
 
 ### 포트폴리오 모드
-- 복수 종목 동시 보유를 기본으로 하며, 종목별 **수수료·슬리피지·`lot_step`/`price_step`**·자산군 파라미터(`\texttt{V}`, `\texttt{PV}`)를 적용한다.
-- 리밸런싱 체결은 `reason='rebalance'`로 기록한다.
+- 복수 종목 동시 보유를 기본으로 하며, 종목별 **수수료·슬리피지·`lot_step`/`price_step`**·자산군 파라미터(`V`, `PV`)를 적용한다.
+- 리밸런싱 체결은 `reason='rebalance'`로 기록한다. (`reason` 값은 `signal`, `stop`, `rebalance`의 **소문자**만 허용)
 
 ### 기준 통화 평가
 - 자본 곡선은 **기준 통화(`base_currency`)**로 산출한다. 가격 통화가 다를 경우 시점별 FX로 환산 후 합산한다.
+- **표준(한 줄 정의)**: 로컬 통화가 $L$, 기준 통화가 $B$일 때,
+
+$$
+P^{(B)}_t = P^{(L)}_t \times \texttt{FX}_{L\to B,t}.
+$$
 
 $$
 E_t=\texttt{Cash}^{\text{base}}_t+\sum_i \texttt{Position}_{i,t}\cdot \Big(P_{i,t}^{\text{local}}\times \texttt{FX}_{i\to \text{base},t}\Big)
@@ -259,11 +283,16 @@ $$
 
 ### 루프
 1. **On-Open**: 표준 순서(**스탑 → 신호 → 현금흐름 → 리밸런싱 → 비용 반영**)에 따라 집행 → 포지션/현금/자본 업데이트 → **거래 로그 기록**
-2. **On-Close**: 특징 갱신(SMA, $\mathrm{prev\_low}_N$) → 신호 예약·스탑 판정(예: $L_t \le \mathrm{prev\_low}_N(t-1)$) → **자본 곡선 스냅샷**
+2. **On-Close**: 특징 갱신(SMA, `prev_low_N`) → 신호 예약·스탑 판정 → **자본 곡선 스냅샷**  
+   예시(수식): $L_t \le \mathrm{prev\_low}_N(t-1)$
 
 ### 입력/출력 계약
 - 입력 스냅샷: `DatetimeIndex[UTC]` 단조증가·중복 없음; 필수 `open, high, low, close`, 권장 `open_adj, high_adj, low_adj, close_adj`(혼용 금지).
-- 전략 결과: 특징(`sma{short}`, `sma{long}`, $\mathrm{prev\_low}_N(t)$), 의사결정(`signal_next`, `stop_hit`, `stop_level`), **사이징 스펙**($f, s, \texttt{V}, \texttt{PV}$; 여기서 $s \equiv \texttt{lot\_step}$), **리밸런싱 스펙**(**`target_weights`**, **`cash_flow`**, **`buy_notional`**, **`sell_notional`**).
+- 전략 결과:
+  - 특징: `sma{short}`, `sma{long}`, `prev_low_N`
+  - 의사결정: `signal_next`, `stop_hit`, `stop_level`
+  - 사이징 스펙: `f`, `s`, `V`, `PV` (여기서 `s`는 `lot_step`과 동일)
+  - 리밸런싱 스펙: `target_weights`, `cash_flow`, `buy_notional`, `sell_notional`
 - 출력(표준화):  
   `trades`(시각, 심볼, 방향, 사유[signal/stop/rebalance], 수량, 체결가, 수수료, 슬리피지, 실현 손익, 체결 후 자본/포지션)  
   `equity_curve`(**기준 통화 기준**, 시각, 자본, 포지션, 누적 수수료/슬리피지, 최대낙폭 등)  
@@ -283,19 +312,45 @@ $$
 
 *요약 카드/게이트 기준: 워크포워드·민감도 및 게이트 기준은 본 섹션 하위 문서에 따름.*
 
-* **데이터/스냅샷 무결성 검증**
-  **의도:** 분석에 넣은 데이터가 깨끗하고 규칙대로 저장되어 **같은 입력이면 같은 결과가 다시 나오도록** 재현성을 보장합니다.
+### 데이터/스냅샷 무결성 검증
+**의도:** 분석에 넣은 데이터가 깨끗하고 규칙대로 저장되어 **같은 입력이면 같은 결과가 다시 나오도록** 재현성을 보장합니다.
 
-* **전략 규약 준수 검증**
-  **의도:** 문서에 정의된 **타이밍/규칙(전날 종가로 결정, 다음날 시가로 체결 등)**을 그대로 따랐는지 확인합니다.
+- 인덱스는 **항상 UTC**( `DatetimeIndex[UTC]` )이며, `timezone`은 **시장/캘린더 설명용 메타**임을 확인한다.
+- 스냅샷/메타 필수 필드 존재 및 타입 검증(`source, symbol, start, end, interval, rows, columns, snapshot_path, snapshot_sha256, collected_at, timezone, base_currency, fx_source, fx_source_ts, calendar_id, instrument_registry_hash`).
+- 스냅샷 해시(`snapshot_sha256`) 재계산 일치(재현성 고정).
+- **디스플레이 수식 표기 규약 검증:** 모든 `$$...$$` 블록은 **앞뒤에 한 줄 공백**이 있는지 정적 검사로 확인한다.
 
-* **시뮬레이션 타임라인·회계 검증**
-  **의도:** **주문·체결·수수료·슬리피지·수량 라운딩**이 규칙대로 계산되고, **현금+포지션=자본** 회계 등식이 맞는지 확인합니다.
+### 전략 규약 준수 검증
+**의도:** 문서에 정의된 **타이밍/규칙(전날 종가로 결정, 다음날 시가로 체결 등)**을 그대로 따랐는지 확인합니다.
 
-* **일반화 신뢰도 평가**
-  **의도:** 특정 구간의 **우연한 성과가 아닌지** 보기 위해 워크포워드로 구간을 나눠도 성능이 유지되는지, **비용/파라미터가 조금 변해도** 전략이 무너지지 않는지 점검합니다.
+- **타임라인 규약:** 신호(결정=Close(t−1), 집행=Open(t)), 스탑(판정=Close(t), 집행=Open(t+1)), **Stop > Signal**, **룩어헤드 금지** 준수.
+- **SMA 입력 정의:** SMA 수식의 입력에 대해 “여기서 $P_t$는 $\texttt{close\_adj}$ (우선, 부재 시 $\texttt{close}$)”가 문서·코드 모두에서 일관되게 적용되는지 점검.
+- **Donchian 표기:** 본문 `prev_low_N` / 수식 $\mathrm{prev\_low}_N(\cdot)$ 사용 일치.
 
-* **성과 시각화**
-  **의도:** **자본곡선, 최대낙폭, 롤링 샤프, 거래별 손익 분포** 등을 보기 쉽게 그려 **성과와 위험을 한눈에** 파악합니다.
+### 시뮬레이션 타임라인·회계 검증
+**의도:** **주문·체결·수수료·슬리피지·수량 라운딩**이 규칙대로 계산되고, **현금+포지션=자본** 회계 등식이 맞는지 확인합니다.
 
-**검증 로그/출력 규격:** 시뮬레이션 산출물(`trades`, `equity_curve`, `metrics`, `run_meta`)과 **필드명 일치** 여부를 재확인합니다.
+- 체결가 정의: \texttt{Open\_eff}는 \texttt{open\_adj}(존재 시), 그 외 \texttt{open}을 사용. 가격 라운딩=\texttt{price\_step}, 수량 라운딩=\texttt{lot\_step}.
+- 회계 등식: 현금 변화 + 포지션 평가손익 − 비용(수수료·슬리피지) = 자본 변화 일치 여부.
+- **기준 통화 환산 표준(검증 기준)**: 로컬 통화 $L$, 기준 통화 $B$에 대해 아래를 준수하는지 확인.
+
+$$
+P^{(B)}_t = P^{(L)}_t \times \texttt{FX}_{L\to B,t}.
+$$
+
+### 일반화 신뢰도 평가
+**의도:** 특정 구간의 **우연한 성과가 아닌지** 보기 위해 워크포워드로 구간을 나눠도 성능이 유지되는지, **비용/파라미터가 조금 변해도** 전략이 무너지지 않는지 점검합니다.
+
+- 워크포워드 분할(학습/검증 시계열 분리)에서 성능 유지.
+- 민감도: \texttt{commission\_rate}, \texttt{slip}, \texttt{lot\_step}, \texttt{price\_step}, $N$, $f$ 등에 대한 로버스트니스.
+
+### 성과 시각화
+**의도:** **자본곡선, 최대낙폭, 롤링 샤프, 거래별 손익 분포** 등을 보기 쉽게 그려 **성과와 위험을 한눈에** 파악합니다.
+
+- 시각화 산출물은 표준 출력(`equity_curve`, `metrics`)과 필드명·스키마 일치.
+- 롤링 윈도우 지표(샤프 등) 계산 시 \texttt{NaN} 처리·윈도 경계 일관성 점검.
+
+### 검증 로그/출력 규격
+- 시뮬레이션 산출물(`trades`, `equity_curve`, `metrics`, `run_meta`)과 **필드명 일치** 여부를 재확인한다.
+- `trades.reason`은 **소문자 고정**으로만 허용: `signal`, `stop`, `rebalance`.
+- `run_meta`에는 `base_currency`, 스냅샷 해시/기간, `instrument_registry_hash`, `cash_flow_source`, `target_weights_source`, 생성 시각·버전이 포함되어야 한다.

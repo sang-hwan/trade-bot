@@ -1,16 +1,19 @@
 # simulation/outputs.py
 """
-산출물 고정 유틸리티.
-- 표준 출력 스키마: trades / equity_curve / metrics / run_meta
-- 계산 규약: MDD = min(equity / cummax(equity) - 1), total_return = last / initial - 1
-- 역할 한정: 집계/고정만 수행(전략/체결/사이징 로직 없음)
+산출물 유틸(표준 스키마 고정).
+- trades / equity_curve / metrics / run_meta 생성
+- MDD = min(equity / cummax(equity) - 1)
+- total_return = last_equity / initial_equity - 1
 """
 
 from __future__ import annotations
 
+# ── 표준 라이브러리 우선
 from collections.abc import Iterable, Mapping
 from dataclasses import is_dataclass
+from typing import Any
 
+# ── 서드파티
 import pandas as pd
 
 __all__ = [
@@ -23,14 +26,15 @@ __all__ = [
 
 
 # ---------- 표준 DataFrame 구축 ----------
+
 def make_trades_df(trades: Iterable[object]) -> pd.DataFrame:
-    """거래 로그 시퀀스 → 표준 trades DataFrame(ts 오름차순). Dataclass/매핑 모두 지원."""
-    rows: list[dict[str, object]] = []
+    """거래 로그 시퀀스 → trades DataFrame(ts 오름차순). Dataclass/매핑 지원."""
+    rows: list[dict[str, Any]] = []
     for t in trades:
         if is_dataclass(t):
-            rows.append(t.__dict__)  # dataclass 인스턴스
-        elif isinstance(t, dict):
-            rows.append(dict(t))     # 매핑 계열
+            rows.append(t.__dict__)
+        elif isinstance(t, Mapping):
+            rows.append(dict(t))
         else:
             raise TypeError("trade item must be dataclass or mapping")
     df = pd.DataFrame(rows)
@@ -41,8 +45,8 @@ def make_trades_df(trades: Iterable[object]) -> pd.DataFrame:
     return df
 
 
-def make_equity_curve(rows: Iterable[Mapping[str, object]]) -> pd.DataFrame:
-    """스냅샷 행 시퀀스 → 표준 equity_curve (index=ts)."""
+def make_equity_curve(rows: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """스냅샷 행 시퀀스 → equity_curve (index=ts)."""
     ec = pd.DataFrame(list(rows))
     if ec.empty:
         return ec
@@ -52,6 +56,7 @@ def make_equity_curve(rows: Iterable[Mapping[str, object]]) -> pd.DataFrame:
 
 
 # ---------- 메트릭 집계 ----------
+
 def _mdd(equity: pd.Series) -> float:
     if equity.empty:
         return 0.0
@@ -62,27 +67,12 @@ def _mdd(equity: pd.Series) -> float:
 
 def _trade_stats(trades_df: pd.DataFrame) -> dict[str, float]:
     if trades_df.empty or "realized_pnl" not in trades_df.columns:
-        return {
-            "trades": 0.0,
-            "wins": 0.0,
-            "losses": 0.0,
-            "win_rate": 0.0,
-            "payoff": 0.0,
-            "profit_factor": 0.0,
-        }
-    realized = trades_df["realized_pnl"].astype(float)
+        return {"trades": 0.0, "wins": 0.0, "losses": 0.0, "win_rate": 0.0, "payoff": 0.0, "profit_factor": 0.0}
 
-    # 닫힘 체결(실현손익 기록 존재) 기준 통계
+    realized = trades_df["realized_pnl"].astype(float)
     mask_close = realized.ne(0.0)
     if not mask_close.any():
-        return {
-            "trades": float(len(trades_df)),
-            "wins": 0.0,
-            "losses": 0.0,
-            "win_rate": 0.0,
-            "payoff": 0.0,
-            "profit_factor": 0.0,
-        }
+        return {"trades": float(len(trades_df)), "wins": 0.0, "losses": 0.0, "win_rate": 0.0, "payoff": 0.0, "profit_factor": 0.0}
 
     r = realized[mask_close]
     wins = r[r > 0.0]
@@ -116,7 +106,7 @@ def compute_metrics(
     initial_equity: float,
     trades_df: pd.DataFrame | None = None,
 ) -> dict[str, float]:
-    """표준 메트릭 집계: total_return, mdd, trade 통계(선택)."""
+    """total_return, mdd, 거래 통계(선택) 집계."""
     if equity_curve.empty or "equity" not in equity_curve.columns:
         total_return = 0.0
         mdd = 0.0
@@ -126,39 +116,59 @@ def compute_metrics(
         mdd = _mdd(equity_curve["equity"].astype(float))
 
     trade_stats = _trade_stats(trades_df if trades_df is not None else pd.DataFrame())
-    return {
-        "total_return": float(total_return),
-        "mdd": float(mdd),
-        **trade_stats,
-    }
+    return {"total_return": float(total_return), "mdd": float(mdd), **trade_stats}
 
 
 # ---------- 메타/최종 패키징 ----------
+
+def _extract_snapshot_fields(snapshot_meta: Mapping[str, Any]) -> dict[str, Any]:
+    """엔진 리포트용 스냅샷 핵심 메타 발췌."""
+    keys = (
+        "source", "symbol", "start", "end", "interval", "timezone",
+        "base_currency", "fx_source", "fx_source_ts", "calendar_id",
+        "instrument_registry_hash", "snapshot_path", "snapshot_sha256",
+        "collected_at", "rows", "columns",
+    )
+    return {k: snapshot_meta[k] for k in keys if k in snapshot_meta}
+
+
 def build_run_meta(
     *,
-    params: Mapping[str, object],
+    params: Mapping[str, Any],
     price_columns_used: Mapping[str, str],
-    snapshot_meta: Mapping[str, object] | None = None,
+    snapshot_meta: Mapping[str, Any] | None = None,
+    engine_mode: str = "single-asset-long-only",
+    has_rebalance: bool = False,
+    fx_priced_in_data_stage: bool = True,
     version: str = "engine.v1",
-) -> dict[str, object]:
-    """실행 메타 구성: 파라미터·가격 컬럼·스냅샷 정보·버전."""
-    meta: dict[str, object] = {
+) -> dict[str, Any]:
+    """
+    실행 메타:
+    - params: 엔진 입력(f, N, lot_step, price_step, commission_rate, slip, V, PV, initial_equity 등)
+    - price_columns_used: {"open": "open_adj|open", "close": "close_adj|close"}
+    - snapshot_meta: 기준 통화/해시/캘린더/FX 시점 등 핵심 필드 포함
+    - engine_mode: 'single-asset-long-only' 명시(기준 통화 환산은 데이터 단계에서 완료)
+    """
+    meta: dict[str, Any] = {
         **dict(params),
         "price_columns_used": dict(price_columns_used),
+        "engine_mode": str(engine_mode),
+        "has_rebalance": bool(has_rebalance),
+        "fx_priced_in_data_stage": bool(fx_priced_in_data_stage),
         "version": str(version),
     }
     if snapshot_meta is not None:
-        meta["snapshot"] = dict(snapshot_meta)
+        meta["snapshot"] = _extract_snapshot_fields(snapshot_meta)
     return meta
 
 
 def finalize_outputs(
     trades_df: pd.DataFrame,
     equity_curve: pd.DataFrame,
-    metrics: Mapping[str, object],
-    run_meta: Mapping[str, object],
-) -> dict[str, object]:
-    """표준 출력 딕셔너리 고정."""
+    metrics: Mapping[str, Any],
+    run_meta: Mapping[str, Any],
+) -> dict[str, Any]:
+    """최종 출력 딕셔너리."""
     return {
         "trades": trades_df,
         "equity_curve": equity_curve,

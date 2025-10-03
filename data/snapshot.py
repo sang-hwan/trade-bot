@@ -1,22 +1,27 @@
 # snapshot.py
 """
 스냅샷 고정(Parquet 저장 + SHA-256 해시 + 메타 생성).
-- 전제: 입력은 품질 검증/조정 완료, 수정 없음.
-- 인덱스: DatetimeIndex(tz='UTC') 보존.
 
 공개 API
-- write(df, *, source, symbol, start, end, interval, out_dir, filename=None, timezone='UTC') -> SnapshotMeta
+- write(
+    df, *,
+    source, symbol, start, end, interval, out_dir,
+    filename=None, timezone='UTC',
+    parquet_engine=None, parquet_compression=None,
+    # 옵션 메타(제공 시에만 기록)
+    base_currency=None, fx_source=None, fx_source_ts=None,
+    calendar_id=None, instrument_registry_hash=None
+  ) -> SnapshotMeta
 """
 
 from __future__ import annotations
 
-# 표준 라이브러리 우선
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone as _tz
 from hashlib import sha256
 from pathlib import Path
+import json
 
-# 서드파티
 import pandas as pd
 
 __all__ = ["SnapshotMeta", "SnapshotError", "write"]
@@ -28,6 +33,7 @@ class SnapshotError(ValueError):
 
 @dataclass(frozen=True)
 class SnapshotMeta:
+    # 기본 메타
     source: str
     symbol: str
     start: str | None
@@ -39,6 +45,12 @@ class SnapshotMeta:
     snapshot_sha256: str
     collected_at: str
     timezone: str
+    # 옵션 메타
+    base_currency: str | None = None
+    fx_source: str | None = None
+    fx_source_ts: str | None = None
+    calendar_id: str | None = None
+    instrument_registry_hash: str | None = None
 
 
 def _sanitize_filename(s: str) -> str:
@@ -80,24 +92,32 @@ def _to_parquet_with_fallback(
     engine_pref: str | None,
     compression: str | None,
 ) -> None:
-    """엔진 우선순위에 따라 저장 시도: 지정값 → 'pyarrow' → 'fastparquet' → 기본탐지."""
+    """지정 엔진 → 'pyarrow' → 'fastparquet' → 기본탐지 순으로 시도, 실패 시 누적 오류 포함해 SnapshotError."""
     tried: list[tuple[str | None, str]] = []
     engines: list[str | None] = []
     if engine_pref:
         engines.append(engine_pref)
     engines.extend([e for e in ("pyarrow", "fastparquet") if e != engine_pref])
-    engines.append(None)  # pandas 기본 탐지
+    engines.append(None)
 
     for eng in engines:
         try:
             df.to_parquet(path, index=True, engine=eng, compression=compression)
             return
-        except Exception as e:  # 다양한 엔진 예외를 간결히 수집
+        except Exception as e:
             tried.append((eng, repr(e)))
 
     msgs = " | ".join([f"engine={eng!r}: {err}" for eng, err in tried])
     order = " -> ".join([repr(e) for e in engines])
     raise SnapshotError(f"Parquet write failed. Tried: {order} | errors: {msgs}")
+
+
+def _norm_str(x: str | None) -> str | None:
+    """공백/빈 문자열을 None으로 정규화."""
+    if x is None:
+        return None
+    x = str(x).strip()
+    return x if x else None
 
 
 def write(
@@ -113,12 +133,17 @@ def write(
     timezone: str = "UTC",
     parquet_engine: str | None = None,
     parquet_compression: str | None = None,
+    base_currency: str | None = None,
+    fx_source: str | None = None,
+    fx_source_ts: str | None = None,
+    calendar_id: str | None = None,
+    instrument_registry_hash: str | None = None,
 ) -> SnapshotMeta:
     """
     Parquet 저장 → 파일 해시 산출 → SnapshotMeta 반환.
-    - df.index: DatetimeIndex(tz='UTC') 필수(변환 없음)
-    - filename 미지정 시 '{source}_{symbol}_{interval}_{YYYYMMDDhhmmssZ}.parquet'
-    - parquet_*는 pandas.to_parquet 인자로 전달(엔진은 폴백 적용)
+    - df.index: DatetimeIndex(tz='UTC') 필수
+    - filename 미지정: '{source}_{symbol}_{interval}_{YYYYMMDDhhmmssZ}.parquet'
+    - parquet_*: pandas.to_parquet 전달(엔진 폴백 적용)
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise SnapshotError("df.index는 DatetimeIndex여야 합니다.")
@@ -137,7 +162,7 @@ def write(
 
     digest = _file_sha256(path)
 
-    return SnapshotMeta(
+    meta = SnapshotMeta(
         source=source,
         symbol=symbol,
         start=start,
@@ -149,4 +174,20 @@ def write(
         snapshot_sha256=digest,
         collected_at=_now_utc_iso(),
         timezone=timezone,
+        base_currency=_norm_str(base_currency),
+        fx_source=_norm_str(fx_source),
+        fx_source_ts=_norm_str(fx_source_ts),
+        calendar_id=_norm_str(calendar_id),
+        instrument_registry_hash=_norm_str(instrument_registry_hash),
     )
+
+    # 사이드카 JSON 저장(메타 기록 실패는 스냅샷 성공과 분리)
+    try:
+        sidecar = path.with_suffix(path.suffix + ".meta.json")
+        with sidecar.open("w", encoding="utf-8") as f:
+            json.dump(asdict(meta), f, ensure_ascii=False, indent=2)
+    except (OSError, TypeError, ValueError):
+        # 파일 시스템/직렬화 오류 등은 무시(스냅샷 자체는 성공)
+        pass
+
+    return meta

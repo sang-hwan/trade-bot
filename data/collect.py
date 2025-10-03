@@ -1,316 +1,323 @@
-# collect.py
+# data/collect.py
 """
-원천(API) → DatetimeIndex[UTC] → 컬럼 표준화(open, high, low, close)
-- 주식: Yahoo Finance (yfinance)
-- 코인: Upbit Public API
+OHLCV 수집 → UTC DatetimeIndex → 표준 컬럼화(open, high, low, close[, volume, AdjClose])
 
-출력
-- 인덱스: pandas.DatetimeIndex(tz='UTC'), 오름차순, 중복 제거
+공개 API
+- fetch_yahoo_ohlcv(symbol, start=None, end=None, interval='1d') -> pd.DataFrame
+- fetch_upbit_ohlcv(market, start=None, end=None, interval='1d', max_rows=200, session=None) -> pd.DataFrame
+- collect(source, symbol, start=None, end=None, interval='1d', *, base_currency=None, calendar_id=None,
+          price_currency=None) -> CollectResult
+
+출력 계약
+- 인덱스: DatetimeIndex(tz='UTC'), 오름차순, 중복 제거
 - 필수 컬럼: open, high, low, close (float)
 - 선택 컬럼: volume (float), AdjClose (주식)
+- 메타: meta={"price_currency": ...} (상위 qv_meta 연계용)
 """
 
 from __future__ import annotations
 
-# 표준 라이브러리
-from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Iterable
 
-# 서드파티
+import time  # API rate-limit 보호에 사용
 import pandas as pd
 
-# Upbit(지연 의존)
-try:
-    import requests as _requests  # type: ignore
-except Exception:
-    _requests = None
-
-# Yahoo (yfinance)
-try:
-    import yfinance as yf  # type: ignore
-except Exception:
-    yf = None
-
-__all__ = ["CollectResult", "collect", "fetch_yahoo_ohlcv", "fetch_upbit_ohlcv"]
-
-# ---------- 공통 유틸 ----------
-
-def _as_utc_ts(dt_like: datetime | pd.Timestamp) -> pd.Timestamp:
-    ts = pd.Timestamp(dt_like)
-    return ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+__all__ = [
+    "CollectResult",
+    "fetch_yahoo_ohlcv",
+    "fetch_upbit_ohlcv",
+    "collect",
+]
 
 
-def _to_utc_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    return idx.tz_localize(timezone.utc) if idx.tz is None else idx.tz_convert(timezone.utc)
+# ───────────────────────────────
+# 공용 유틸
+# ───────────────────────────────
+
+def _as_utc_ts(x: str | datetime | pd.Timestamp) -> pd.Timestamp:
+    """문자열/Datetime을 tz-aware UTC Timestamp로 변환."""
+    ts = pd.Timestamp(x)
+    return ts.tz_localize(timezone.utc) if ts.tzinfo is None else ts.tz_convert(timezone.utc)
 
 
-def _parse_dt(dt: str | None) -> datetime | None:
-    if not dt:
-        return None
-    ts = pd.to_datetime(dt, utc=True)
-    if isinstance(ts, pd.Timestamp):
-        return ts.to_pydatetime()
-    raise ValueError("start/end는 단일 시각 문자열이어야 합니다.")
+def _to_utc_index(idx: Iterable) -> pd.DatetimeIndex:
+    """임의 인덱스를 UTC로 통일하고 정렬·중복 제거."""
+    di = pd.DatetimeIndex(idx)
+    di = di.tz_localize(timezone.utc) if di.tz is None else di.tz_convert(timezone.utc)
+    return pd.DatetimeIndex(di.sort_values().unique())
 
 
-def _flatten_and_dedupe_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """MultiIndex → 단일 레벨, 이후 중복 컬럼은 마지막 것만 유지."""
-    if isinstance(df.columns, pd.MultiIndex):
-        lvl0 = [c[0] for c in df.columns]
-        if any(name in lvl0 for name in ("Open", "High", "Low", "Close", "Adj Close", "Volume")):
-            df = df.copy(); df.columns = lvl0
-        else:
-            df = df.copy(); df.columns = [c[-1] for c in df.columns]
-    if getattr(df.columns, "duplicated", None) is not None and df.columns.duplicated().any():
-        df = df.loc[:, ~df.columns.duplicated(keep="last")]
+def _enforce_ohlc_types(df: pd.DataFrame) -> pd.DataFrame:
+    """OHLCV 수치형 강제."""
+    for c in ("open", "high", "low", "close", "volume", "AdjClose"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
 
-def _finalize(df: pd.DataFrame) -> pd.DataFrame:
-    """인덱스 정리 및 표준 컬럼 순서."""
-    if df.empty:
+def _drop_dup_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """중복 컬럼 제거(동일 이름이 여러 개면 마지막 것 유지)."""
+    if not isinstance(df.columns, pd.Index):
         return df
-    df = df[~df.index.duplicated(keep="last")].sort_index()
-    col_order = ["open", "high", "low", "close", "volume", "AdjClose"]
-    cols = [c for c in col_order if c in df.columns] + [c for c in df.columns if c not in col_order]
-    return df[cols]
+    return df.loc[:, ~df.columns.duplicated(keep="last")]
 
-# ---------- Yahoo (Stocks) ----------
+
+def _drop_dupes_sort(df: pd.DataFrame) -> pd.DataFrame:
+    """중복 제거 후 시계열 정렬."""
+    df = df[~df.index.duplicated(keep="last")]
+    return df.sort_index()
+
+
+def _map_yahoo_interval(iv: str) -> str:
+    """사용자 인터벌 → yfinance 인터벌."""
+    m = {"1d": "1d", "1w": "1wk", "1wk": "1wk", "1m": "1mo", "1mo": "1mo"}
+    return m.get(iv.lower(), iv)
+
+
+def _map_upbit_interval(iv: str) -> str:
+    """사용자 인터벌 → Upbit 일/주/월 엔드포인트 키."""
+    ivu = iv.lower()
+    if ivu in ("1d", "day", "1day"):
+        return "days"
+    if ivu in ("1w", "week", "1week"):
+        return "weeks"
+    if ivu in ("1m", "1mo", "month", "1month"):
+        return "months"
+    raise ValueError(f"Unsupported Upbit interval: {iv}")
+
+
+def _infer_price_currency(source: str, symbol: str) -> str:
+    """
+    로컬(가격) 통화 추정:
+    - upbit: 'KRW-BTC' → 'KRW', 'USDT-XXX' → 'USDT', 'BTC-XXX' → 'BTC'
+    - yahoo: 티커 접미사 휴리스틱(기본 'USD')
+    """
+    s = source.lower()
+    sym = symbol.upper()
+    if s == "upbit":
+        return sym.split("-", 1)[0] if "-" in sym else "KRW"
+    suffix_map = {
+        "KS": "KRW", "KQ": "KRW", "T": "JPY",
+        "TO": "CAD", "V": "CAD", "L": "GBX",
+        "HK": "HKD", "SS": "CNY", "SZ": "CNY",
+        "SI": "SGD", "AX": "AUD", "NS": "INR",
+        "BO": "INR", "SA": "BRL", "MX": "MXN",
+        "MI": "EUR", "PA": "EUR", "AS": "EUR",
+        "DE": "EUR", "BE": "EUR", "SW": "CHF",
+    }
+    if "." in sym:
+        return suffix_map.get(sym.rsplit(".", 1)[-1], "USD")
+    return "USD"
+
+
+# ───────────────────────────────
+# 원천별 수집
+# ───────────────────────────────
 
 def fetch_yahoo_ohlcv(
     symbol: str,
-    start: str | None = None,
-    end: str | None = None,
+    start: str | datetime | None = None,
+    end: str | datetime | None = None,
     interval: str = "1d",
 ) -> pd.DataFrame:
-    """yfinance 사용(auto_adjust=False; AdjClose는 이후 단계에서 사용)."""
-    if yf is None:
-        raise RuntimeError("yfinance가 필요합니다. `pip install yfinance` 후 실행하세요.")
+    """Yahoo Finance OHLCV(+AdjClose) → 표준 스키마."""
+    try:
+        import yfinance as yf  # 서드파티
+    except ImportError as e:
+        raise RuntimeError("yfinance가 필요합니다. pip install yfinance") from e
 
-    dt_start = _parse_dt(start)
-    dt_end = _parse_dt(end)
+    yf_iv = _map_yahoo_interval(interval)
+    kwargs: dict[str, Any] = {}
+    if start:
+        kwargs["start"] = _as_utc_ts(start).to_pydatetime()
+    if end:
+        # yfinance는 end 비포함 → 다음날 00:00으로 보정
+        kwargs["end"] = (_as_utc_ts(end) + pd.Timedelta(days=1)).to_pydatetime()
 
-    dl = yf.download(
-        tickers=symbol,
-        start=dt_start,
-        end=(dt_end + timedelta(days=1)) if dt_end else None,  # yfinance end 보정
-        interval=interval,
-        auto_adjust=False,
-        progress=False,
-        threads=True,
-    )
-    if dl.empty:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "AdjClose"])
+    dl = yf.download(symbol, interval=yf_iv, auto_adjust=False, progress=False, **kwargs)
+    if not isinstance(dl, pd.DataFrame) or dl.empty:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-    dl = _flatten_and_dedupe_columns(dl)
     dl = dl.rename(
         columns={
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Adj Close": "AdjClose",
-            "Volume": "volume",
+            "Open": "open", "High": "high", "Low": "low",
+            "Close": "close", "Adj Close": "AdjClose", "Volume": "volume",
         }
     )
-    dl = _flatten_and_dedupe_columns(dl)
+    dl = _drop_dup_columns(dl)
     dl.index = _to_utc_index(dl.index)
 
-    if dt_start:
-        dl = dl[dl.index >= _as_utc_ts(dt_start)]
-    if dt_end:
-        dl = dl[dl.index <= _as_utc_ts(dt_end)]
+    if start:
+        dl = dl[dl.index >= _as_utc_ts(start)]
+    if end:
+        dl = dl[dl.index <= _as_utc_ts(end)]
 
-    for c in ("open", "high", "low", "close", "volume", "AdjClose"):
-        if c in dl.columns:
-            dl[c] = pd.to_numeric(dl[c], errors="coerce")
+    dl = _enforce_ohlc_types(dl)
+    dl = _drop_dupes_sort(dl)
 
-    dl = dl[~dl.index.duplicated(keep="last")].sort_index()
-    return _finalize(dl)
+    for c in ("open", "high", "low", "close"):
+        if c not in dl.columns:
+            dl[c] = pd.NA
+    if "volume" not in dl.columns:
+        dl["volume"] = pd.NA
 
-# ---------- Upbit (Crypto) ----------
-
-_UPBIT_BASE = "https://api.upbit.com/v1/candles"
-
-def _upbit_interval_path(interval: str) -> str:
-    """Upbit interval 문자열 → API path."""
-    s = interval.strip().lower()
-    if s.endswith("m"):
-        unit = int(s[:-1])
-        if unit not in (1, 3, 5, 10, 15, 30, 60, 240):
-            raise ValueError("Upbit 분봉은 {1,3,5,10,15,30,60,240}만 지원합니다.")
-        return f"minutes/{unit}"
-    if s in ("1d", "d", "day", "1day"):
-        return "days"
-    if s in ("1w", "w", "week", "1week"):
-        return "weeks"
-    if s in ("1mo", "mon", "month", "1month", "1mth"):
-        return "months"
-    return "days"
-
-
-def _to_upbit_kst_string(dt_utc: datetime) -> str:
-    """Upbit 'to' 파라미터: 'YYYY-MM-DD HH:MM:SS'(KST)."""
-    kst = timezone(timedelta(hours=9))
-    return dt_utc.astimezone(kst).strftime("%Y-%m-%d %H:%M:%S")
+    return dl[["open", "high", "low", "close", "volume"]].assign(
+        AdjClose=dl.get("AdjClose", pd.NA)
+    )
 
 
 def fetch_upbit_ohlcv(
     market: str,
-    start: str | None = None,
-    end: str | None = None,
+    start: str | datetime | None = None,
+    end: str | datetime | None = None,
     interval: str = "1d",
-    max_rows: int = 10_000,
-    session: "requests.Session | None" = None,
+    *,
+    max_rows: int = 200,
+    session=None,
 ) -> pd.DataFrame:
-    """Upbit Public API(무인증). market 예: 'KRW-BTC'."""
-    if session is None:
-        if _requests is None:
-            raise RuntimeError("requests가 필요합니다. `pip install requests`")
-        s = _requests.Session()
-    else:
-        s = session
+    """Upbit Public API(무인증): 일/주/월 봉 → 표준 스키마."""
+    import requests
 
-    path = _upbit_interval_path(interval)
-    url = f"{_UPBIT_BASE}/{path}"
+    endpoint_kind = _map_upbit_interval(interval)
+    base_url = f"https://api.upbit.com/v1/candles/{endpoint_kind}"
+    sess = session or requests.Session()
 
-    dt_start = _parse_dt(start)
-    dt_end = _parse_dt(end)
-
-    to_cursor_utc: datetime | None = dt_end
-    rows: list[dict] = []
+    dt_start = _as_utc_ts(start) if start else None
+    dt_end = _as_utc_ts(end) if end else None
+    to_cursor = dt_end or pd.Timestamp.now(tz=timezone.utc)
+    frames: list[pd.DataFrame] = []
 
     while True:
-        params = {"market": market, "count": 200}
-        if to_cursor_utc:
-            params["to"] = _to_upbit_kst_string(to_cursor_utc)
+        params = {"market": market, "count": max_rows}
+        # Upbit 'to'는 KST 기준 문자열
+        to_kst = to_cursor.tz_convert("Asia/Seoul")
+        params["to"] = to_kst.strftime("%Y-%m-%d %H:%M:%S")
 
-        r = s.get(url, params=params, timeout=15)
-        if r.status_code != 200:
-            raise RuntimeError(f"Upbit API 오류: HTTP {r.status_code} - {r.text}")
-
-        batch = r.json()
-        if not batch:
+        r = sess.get(base_url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if not data:
             break
 
-        rows.extend(batch)
-        if len(rows) >= max_rows:
-            break
+        df = pd.DataFrame(data)
+        df["ts"] = pd.to_datetime(df["candle_date_time_utc"], utc=True)
+        df = df.set_index("ts")[["opening_price", "high_price", "low_price", "trade_price", "candle_acc_trade_volume"]]
+        df = df.rename(
+            columns={
+                "opening_price": "open",
+                "high_price": "high",
+                "low_price": "low",
+                "trade_price": "close",
+                "candle_acc_trade_volume": "volume",
+            }
+        )
+        df = _drop_dup_columns(df)
+        frames.append(df)
 
-        oldest_utc = pd.to_datetime(batch[-1]["candle_date_time_utc"], utc=True).to_pydatetime()
-        to_cursor_utc = oldest_utc - timedelta(seconds=1)
-        if dt_start and (oldest_utc <= dt_start):
+        last_ts = df.index.min()  # 최신순 반환 → min이 과거
+        if dt_start and last_ts <= dt_start:
             break
+        to_cursor = (last_ts - pd.Timedelta(seconds=1)).tz_convert(timezone.utc)
+        time.sleep(0.05)  # rate-limit 보호
 
-    if not rows:
+    if not frames:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-    df = pd.DataFrame(rows)
-    idx = pd.to_datetime(df["candle_date_time_utc"], utc=True)
-    df = df.set_index(idx)
+    dl = pd.concat(frames, axis=0)
+    dl.index = _to_utc_index(dl.index)
 
-    rename_map = {
-        "opening_price": "open",
-        "high_price": "high",
-        "low_price": "low",
-        "trade_price": "close",
-        "candle_acc_trade_volume": "volume",
-    }
-    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    if start:
+        dl = dl[dl.index >= _as_utc_ts(start)]
+    if end:
+        dl = dl[dl.index <= _as_utc_ts(end)]
 
-    keep = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
-    df = df[keep].copy()
+    dl = _enforce_ohlc_types(dl)
+    dl = _drop_dupes_sort(dl)
+    return dl[["open", "high", "low", "close", "volume"]]
 
-    for c in keep:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    if dt_start:
-        df = df[df.index >= _as_utc_ts(dt_start)]
-    if dt_end:
-        df = df[df.index <= _as_utc_ts(dt_end)]
-
-    df = _flatten_and_dedupe_columns(df)
-    df = df[~df.index.duplicated(keep="last")].sort_index()
-    return _finalize(df)
-
-# ---------- 고수준 라우터 ----------
+# ───────────────────────────────
+# 수집 파사드
+# ───────────────────────────────
 
 @dataclass(frozen=True)
 class CollectResult:
-    source: str
-    symbol: str
-    interval: str
-    start: str | None
-    end: str | None
+    """상위 게이트/스냅샷 연계용 컨테이너."""
     dataframe: pd.DataFrame
+    base_currency: str | None = None
+    calendar_id: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)  # 예: {"price_currency": "USD"}
 
 
 def collect(
     source: str,
     symbol: str,
-    start: str | None = None,
-    end: str | None = None,
+    start: str | datetime | None = None,
+    end: str | datetime | None = None,
     interval: str = "1d",
-    **kwargs,
+    *,
+    base_currency: str | None = None,
+    calendar_id: str | None = None,
+    price_currency: str | None = None,
 ) -> CollectResult:
-    """상위 수집: source ∈ {'yahoo','upbit'}."""
-    s = source.strip().lower()
-    if s == "yahoo":
-        df = fetch_yahoo_ohlcv(symbol=symbol, start=start, end=end, interval=interval)
-    elif s == "upbit":
-        df = fetch_upbit_ohlcv(market=symbol, start=start, end=end, interval=interval, **kwargs)
-    else:
-        raise ValueError("source는 'yahoo' 또는 'upbit'만 지원합니다.")
+    """
+    원천별 수집 후 UTC·표준화 완료된 DataFrame과 메타를 반환.
+    meta['price_currency']는 qv_meta(...)의 FX 필요 판단에 사용 가능.
+    """
+    src = source.lower()
+    if src == "yahoo":
+        df = fetch_yahoo_ohlcv(symbol, start=start, end=end, interval=interval)
+        pc = price_currency or _infer_price_currency("yahoo", symbol)
+        return CollectResult(df, base_currency=base_currency, calendar_id=calendar_id, meta={"price_currency": pc})
 
-    df.index = _to_utc_index(df.index)
-    df = _finalize(df)
-    return CollectResult(source=s, symbol=symbol, interval=interval, start=start, end=end, dataframe=df)
+    if src == "upbit":
+        df = fetch_upbit_ohlcv(symbol, start=start, end=end, interval=interval)
+        cal = calendar_id or "24x7"
+        pc = price_currency or _infer_price_currency("upbit", symbol)
+        return CollectResult(df, base_currency=base_currency, calendar_id=cal, meta={"price_currency": pc})
 
-# ---------- CLI ----------
+    raise ValueError(f"Unsupported source: {source}")
 
-try:
-    from requests import RequestException as _ReqExc  # type: ignore
-except Exception:
-    class _ReqExc(Exception):
-        pass
+
+# ───────────────────────────────
+# CLI (선택)
+# ───────────────────────────────
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="OHLCV 수집 (Yahoo/Upbit)")
-    parser.add_argument("source", type=str, help="yahoo | upbit")
-    parser.add_argument("symbol", type=str, help="예: AAPL / 005930.KS / KRW-BTC")
-    parser.add_argument("--start", type=str, default=None, help="YYYY-MM-DD 또는 ISO8601 (UTC)")
-    parser.add_argument("--end", type=str, default=None, help="YYYY-MM-DD 또는 ISO8601 (UTC)")
-    parser.add_argument("--interval", type=str, default="1d", help="yahoo/upbit 인터벌 문자열")
-    parser.add_argument("--out-csv", type=str, default=None, help="CSV 저장 경로(선택)")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Collect OHLCV data (UTC standardized)")
+    p.add_argument("--source", required=True, help="yahoo | upbit")
+    p.add_argument("--symbol", required=True, help="예: AAPL / 005930.KS / KRW-BTC")
+    p.add_argument("--start", default=None)
+    p.add_argument("--end", default=None)
+    p.add_argument("--interval", default="1d")
+    p.add_argument("--base-currency", dest="base_currency", default=None)
+    p.add_argument("--calendar-id", dest="calendar_id", default=None)
+    p.add_argument("--price-currency", dest="price_currency", default=None)
+    p.add_argument("--out-csv", default=None)
+    args = p.parse_args()
 
-    try:
-        result = collect(
-            source=args.source,
-            symbol=args.symbol,
-            start=args.start,
-            end=args.end,
-            interval=args.interval,
-        )
-        df = result.dataframe
-        if args.out_csv:
-            Path(args.out_csv).parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(args.out_csv, index=True)
-            print(f"[OK] rows={len(df):,} → CSV: {args.out_csv}")
-        else:
-            print(f"[SOURCE] {result.source}  [SYMBOL] {result.symbol}  [INTERVAL] {result.interval}")
-            print(f"[PERIOD] start={result.start} end={result.end}  [ROWS] {len(df):,}")
-            print(df.head().to_string())
-    except (_ReqExc, ValueError, RuntimeError) as e:
-        print(f"[ERROR] {e}", file=sys.stderr)
-        print(
-            "예시:\n"
-            "  python collect.py yahoo AAPL --start 2020-01-01 --end 2025-01-01 --interval 1d\n"
-            "  python collect.py upbit KRW-BTC --start 2023-01-01 --end 2025-01-01 --interval 1d",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    result = collect(
+        source=args.source,
+        symbol=args.symbol,
+        start=args.start,
+        end=args.end,
+        interval=args.interval,
+        base_currency=args.base_currency,
+        calendar_id=args.calendar_id,
+        price_currency=args.price_currency,
+    )
+
+    print(
+        f"[collect] rows={len(result.dataframe)}, "
+        f"cols={list(result.dataframe.columns)}, "
+        f"tz={getattr(result.dataframe.index, 'tz', None)}"
+    )
+    print(f"[meta] base_currency={result.base_currency} calendar_id={result.calendar_id} meta={result.meta}")
+
+    if args.out_csv:
+        result.dataframe.to_csv(args.out_csv, index=True)
+        print(f"[saved] {args.out_csv}")
