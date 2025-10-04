@@ -1,4 +1,4 @@
-# main.py
+# backtest.py
 from __future__ import annotations
 
 # 표준 라이브러리(우선)
@@ -281,8 +281,10 @@ def main(argv=None) -> int:
         )
         return 0
     except Exception as e:
-        # 종료 코드 반영용 최상위 처리
+        # 종료 코드 반영용 + 원인 추적
+        import traceback
         print(f"[ERROR] {e}", file=sys.stderr)
+        traceback.print_exc()
         return 1
 
 

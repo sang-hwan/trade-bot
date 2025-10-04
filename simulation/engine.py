@@ -125,6 +125,7 @@ def _build_decisions(df: pd.DataFrame, epsilon: float) -> pd.DataFrame:
     out = df.copy()
     decided = (df["sma_short"] - df["sma_long"]) > float(epsilon)
     out["signal_next"] = decided.shift(1).astype("Int8")
+    out["signal_next_flag"] = out["signal_next"].eq(1).fillna(False).astype(bool)
     return out
 
 
@@ -134,6 +135,7 @@ def _build_stop_flags(df: pd.DataFrame) -> pd.DataFrame:
     l = _col(df, "low")
     low_s = _series_1d(df, l)
     out["stop_hit"] = (low_s <= df["prev_low_N_tminus1"])
+    out["stop_hit_flag"] = out["stop_hit"].fillna(False).astype(bool)
     return out
 
 
@@ -247,7 +249,7 @@ def run(  # noqa: PLR0913 (명시적 인자 유지)
             pending_exit = (qty > 0.0) and (exit_price is None)
 
         # On-Open: 2) 신호 체결
-        if not skip_signal_today and qty == 0.0 and bool(row.get("signal_next", 0)):
+        if (not skip_signal_today) and (qty == 0.0) and bool(row["signal_next_flag"]):
             entry_px = open_eff(row, slip=slip, side="buy", price_step=price_step)
             if entry_px is not None:
                 E_open = cash  # 포지션 없음 가정

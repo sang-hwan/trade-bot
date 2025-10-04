@@ -1,0 +1,17 @@
+{
+  "initial_equity": 10000000.0,
+  "final_equity": 7263615.184916059,
+  "total_return": -0.2736384815083941,
+  "mdd": -0.39075651532311473,
+  "cagr": -0.0404508828855733,
+  "n_trades": 93,
+  "n_realized": 93,
+  "win_rate": 0.12903225806451613,
+  "payoff": 1.4833372257054074,
+  "paths": {
+    "equity_png": ".\\runs\\SIRI_Donchian_N20_F02\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\SIRI_Donchian_N20_F02\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\SIRI_Donchian_N20_F02\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\SIRI_Donchian_N20_F02\\validation\\fig_trade_pnl.png"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "source": "yahoo",
+  "symbol": "GPRO",
+  "start": "2018-01-02T00:00:00Z",
+  "end": "2025-09-30T00:00:00Z",
+  "interval": "1d",
+  "rows": 1947,
+  "columns": 10,
+  "snapshot_path": "C:\\Users\\hi\\Desktop\\APPLICATION\\workspace\\trade-bot\\runs\\GPRO_Donchian_N20_F02\\yahoo_GPRO_1d_20250930000000Z.parquet",
+  "snapshot_sha256": "882f66883e4867978f2b0eb92c1ec3a0818003659feff48e392b25d35e66b793",
+  "collected_at": "2025-10-04T08:27:13Z",
+  "timezone": "UTC",
+  "column_names": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "AdjClose",
+    "open_adj",
+    "high_adj",
+    "low_adj",
+    "close_adj"
+  ],
+  "requested_start": "2018-01-01",
+  "requested_end": "2025-09-30",
+  "base_currency": "USD",
+  "fx_source": null,
+  "fx_source_ts": null,
+  "calendar_id": "XNAS",
+  "instrument_registry_hash": null
+}

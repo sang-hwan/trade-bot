@@ -1,0 +1,70 @@
+{
+  "data_gate": {
+    "passed": true,
+    "errors": [],
+    "warnings": [],
+    "evidence": {
+      "index_min_utc": "2018-01-02T00:00:00Z",
+      "index_max_utc": "2025-09-30T00:00:00Z",
+      "rows": 1947,
+      "columns": 10,
+      "index_min_iso": "2018-01-02T00:00:00Z",
+      "index_max_iso": "2025-09-30T00:00:00Z",
+      "sha256_calc": "5810d36e6d12b9983013d9724dbc9095aedc590d76bc595442a67a21003c20b2"
+    }
+  },
+  "strategy_gate": {
+    "passed": true,
+    "errors": [],
+    "warnings": [],
+    "evidence": {
+      "close_col_used": "close_adj",
+      "low_col_used": "low_adj",
+      "open_col_used": "open_adj",
+      "params": {
+        "N": 20,
+        "epsilon": 0.0,
+        "sma_short": 10,
+        "sma_long": 50
+      },
+      "n_signal_trades": 39,
+      "n_stop_trades": 38
+    }
+  },
+  "simulation_gate": {
+    "passed": true,
+    "errors": [],
+    "warnings": [],
+    "evidence": {
+      "open_col_used": "open_adj",
+      "close_col_used": "close_adj",
+      "params": {
+        "price_step": 0.01,
+        "lot_step": 1.0,
+        "commission_rate": 0.001,
+        "slip": 0.0005,
+        "initial_equity": 10000000.0
+      },
+      "n_trades": 77
+    }
+  },
+  "analysis_viz": {
+    "passed": true,
+    "errors": [],
+    "warnings": [],
+    "evidence": {
+      "summary_path": ".\\runs\\AAPL_Donchian_N20_F02\\validation\\analysis_summary.json",
+      "figure_paths": [
+        ".\\runs\\AAPL_Donchian_N20_F02\\validation\\fig_equity.png",
+        ".\\runs\\AAPL_Donchian_N20_F02\\validation\\fig_drawdown.png",
+        ".\\runs\\AAPL_Donchian_N20_F02\\validation\\fig_rolling_sharpe.png",
+        ".\\runs\\AAPL_Donchian_N20_F02\\validation\\fig_trade_pnl.png"
+      ],
+      "stats": {
+        "cagr": 0.08654997477485193,
+        "win_rate": 0.2077922077922078,
+        "payoff": 2.946182214084355
+      }
+    }
+  }
+}

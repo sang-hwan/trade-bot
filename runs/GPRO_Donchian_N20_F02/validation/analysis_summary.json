@@ -1,0 +1,17 @@
+{
+  "initial_equity": 10000000.0,
+  "final_equity": 7610741.871839021,
+  "total_return": -0.23892581281609782,
+  "mdd": -0.47818301445430644,
+  "cagr": -0.03464796267424908,
+  "n_trades": 89,
+  "n_realized": 89,
+  "win_rate": 0.056179775280898875,
+  "payoff": 1.1362434781092798,
+  "paths": {
+    "equity_png": ".\\runs\\GPRO_Donchian_N20_F02\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\GPRO_Donchian_N20_F02\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\GPRO_Donchian_N20_F02\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\GPRO_Donchian_N20_F02\\validation\\fig_trade_pnl.png"
+  }
+}

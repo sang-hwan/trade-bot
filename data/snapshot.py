@@ -8,10 +8,15 @@
     source, symbol, start, end, interval, out_dir,
     filename=None, timezone='UTC',
     parquet_engine=None, parquet_compression=None,
-    # 옵션 메타(제공 시에만 기록)
     base_currency=None, fx_source=None, fx_source_ts=None,
     calendar_id=None, instrument_registry_hash=None
   ) -> SnapshotMeta
+
+규약:
+- df.index는 UTC DatetimeIndex.
+- 메타의 start/end는 스냅샷의 **실측** UTC min/max.
+- 요청 구간은 requested_start/requested_end에 보관.
+- rows/columns는 정수(카운트), 열 이름은 column_names로 별도 저장.
 """
 
 from __future__ import annotations
@@ -33,19 +38,22 @@ class SnapshotError(ValueError):
 
 @dataclass(frozen=True)
 class SnapshotMeta:
-    # 기본 메타
+    # 재현성 고정 메타(핵심)
     source: str
     symbol: str
-    start: str | None
-    end: str | None
+    start: str  # UTC ISO(Z) — 실제 스냅샷 인덱스 min
+    end: str    # UTC ISO(Z) — 실제 스냅샷 인덱스 max
     interval: str
     rows: int
-    columns: tuple[str, ...]
+    columns: int
     snapshot_path: str
     snapshot_sha256: str
     collected_at: str
-    timezone: str
-    # 옵션 메타
+    timezone: str  # 설명용(인덱스 변환에 사용하지 않음)
+    # 부가 메타
+    column_names: tuple[str, ...] | None = None
+    requested_start: str | None = None
+    requested_end: str | None = None
     base_currency: str | None = None
     fx_source: str | None = None
     fx_source_ts: str | None = None
@@ -75,12 +83,10 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _default_filename(source: str, symbol: str, interval: str, end: str | None) -> str:
-    ts = (
-        pd.to_datetime(end, utc=True).strftime("%Y%m%d%H%M%SZ")
-        if end
-        else datetime.now(tz=_tz.utc).strftime("%Y%m%d%H%M%SZ")
-    )
+def _default_filename(source: str, symbol: str, interval: str, end_utc_iso: str | None) -> str:
+    ts = end_utc_iso or datetime.now(tz=_tz.utc).strftime("%Y%m%d%H%M%SZ")
+    if "-" in ts:  # ISO(Z) → yyyymmddHHMMSSZ
+        ts = pd.to_datetime(ts, utc=True).strftime("%Y%m%d%H%M%SZ")
     base = f"{_sanitize_filename(source)}_{_sanitize_filename(symbol)}_{_sanitize_filename(interval)}_{ts}"
     return f"{base}.parquet"
 
@@ -92,7 +98,7 @@ def _to_parquet_with_fallback(
     engine_pref: str | None,
     compression: str | None,
 ) -> None:
-    """지정 엔진 → 'pyarrow' → 'fastparquet' → 기본탐지 순으로 시도, 실패 시 누적 오류 포함해 SnapshotError."""
+    """지정 엔진 → 'pyarrow' → 'fastparquet' → 기본탐지 순으로 시도. 모두 실패 시 누적 오류 포함."""
     tried: list[tuple[str | None, str]] = []
     engines: list[str | None] = []
     if engine_pref:
@@ -143,37 +149,46 @@ def write(
     Parquet 저장 → 파일 해시 산출 → SnapshotMeta 반환.
     - df.index: DatetimeIndex(tz='UTC') 필수
     - filename 미지정: '{source}_{symbol}_{interval}_{YYYYMMDDhhmmssZ}.parquet'
-    - parquet_*: pandas.to_parquet 전달(엔진 폴백 적용)
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise SnapshotError("df.index는 DatetimeIndex여야 합니다.")
     if df.index.tz is None or str(df.index.tz) != "UTC":
         raise SnapshotError("df.index 타임존은 tz='UTC' 여야 합니다.")
+    if df.empty:
+        raise SnapshotError("빈 DataFrame은 스냅샷으로 저장할 수 없습니다.")
+
+    # 실측 범위(UTC) 고정
+    idx_utc = df.index  # 이미 UTC
+    start_actual_iso = idx_utc.min().strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_actual_iso = idx_utc.max().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     out_dir = Path(out_dir)
     if out_dir.exists() and not out_dir.is_dir():
         raise SnapshotError(f"out_dir가 디렉터리가 아닙니다: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    fname = _ensure_parquet_suffix(filename or _default_filename(source, symbol, interval, end))
+    # 기본 파일명은 실측 end 기준
+    fname = _ensure_parquet_suffix(filename or _default_filename(source, symbol, interval, end_actual_iso))
     path = out_dir / fname
 
     _to_parquet_with_fallback(df, path, engine_pref=parquet_engine, compression=parquet_compression)
-
     digest = _file_sha256(path)
 
     meta = SnapshotMeta(
         source=source,
         symbol=symbol,
-        start=start,
-        end=end,
+        start=start_actual_iso,                # 실측 min(UTC)
+        end=end_actual_iso,                    # 실측 max(UTC)
         interval=interval,
-        rows=int(len(df)),
-        columns=tuple(map(str, df.columns)),
+        rows=int(df.shape[0]),
+        columns=int(df.shape[1]),
         snapshot_path=str(path),
         snapshot_sha256=digest,
         collected_at=_now_utc_iso(),
-        timezone=timezone,
+        timezone=timezone,                     # 설명용
+        column_names=tuple(map(str, df.columns)),
+        requested_start=_norm_str(start),      # 요청 구간(참고용)
+        requested_end=_norm_str(end),
         base_currency=_norm_str(base_currency),
         fx_source=_norm_str(fx_source),
         fx_source_ts=_norm_str(fx_source_ts),
@@ -181,13 +196,12 @@ def write(
         instrument_registry_hash=_norm_str(instrument_registry_hash),
     )
 
-    # 사이드카 JSON 저장(메타 기록 실패는 스냅샷 성공과 분리)
+    # 사이드카 JSON 저장(메타 기록 실패는 스냅샷 성공과 분리; 구체 예외만 무시)
+    sidecar = path.with_suffix(path.suffix + ".meta.json")
     try:
-        sidecar = path.with_suffix(path.suffix + ".meta.json")
         with sidecar.open("w", encoding="utf-8") as f:
             json.dump(asdict(meta), f, ensure_ascii=False, indent=2)
     except (OSError, TypeError, ValueError):
-        # 파일 시스템/직렬화 오류 등은 무시(스냅샷 자체는 성공)
-        pass
+        pass  # 파일시스템/직렬화 오류가 있어도 스냅샷 파일 자체는 유효
 
     return meta

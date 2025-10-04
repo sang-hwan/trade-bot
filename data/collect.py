@@ -136,9 +136,24 @@ def fetch_yahoo_ohlcv(
         # yfinance는 end 비포함 → 다음날 00:00으로 보정
         kwargs["end"] = (_as_utc_ts(end) + pd.Timedelta(days=1)).to_pydatetime()
 
-    dl = yf.download(symbol, interval=yf_iv, auto_adjust=False, progress=False, **kwargs)
+    dl = yf.download(
+        symbol,
+        interval=yf_iv,
+        auto_adjust=False,
+        progress=False,
+        group_by="column",
+        **kwargs
+    )
     if not isinstance(dl, pd.DataFrame) or dl.empty:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    
+    if isinstance(dl.columns, pd.MultiIndex):
+        lvl0 = {str(x).lower() for x in dl.columns.get_level_values(0)}
+        ohlcv = {"open", "high", "low", "close", "adj close", "volume"}
+        if len(ohlcv & lvl0) >= 3:
+            dl = dl.droplevel(1, axis=1)
+        else:
+            dl = dl.droplevel(0, axis=1)
 
     dl = dl.rename(
         columns={
@@ -146,6 +161,8 @@ def fetch_yahoo_ohlcv(
             "Close": "close", "Adj Close": "AdjClose", "Volume": "volume",
         }
     )
+    if isinstance(dl.columns, pd.MultiIndex):
+        raise ValueError("Yahoo 데이터 컬럼이 여전히 MultiIndex입니다. 단일 티커로 재시도하세요.")
     dl = _drop_dup_columns(dl)
     dl.index = _to_utc_index(dl.index)
 
