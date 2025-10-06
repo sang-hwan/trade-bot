@@ -1,4 +1,4 @@
-# stops.py
+# strategy/stops.py
 """
 전략/스탑: Donchian N-저가 이탈(롱 기준) 스탑 판정과 레벨을 산출.
 

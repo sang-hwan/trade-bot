@@ -1,4 +1,4 @@
-# execution.py
+# simulation/execution.py
 """
 체결 계산 유틸리티 (Python 3.11+).
 - 가격 컬럼: *_adj 우선 사용(혼용 금지)

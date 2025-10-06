@@ -1,4 +1,4 @@
-# quality_gate.py
+# data/quality_gate.py
 """
 정합성(Integrity) 검증 — 공개 API
 - validate(df, *, require_volume=False, min_rows=1) -> None

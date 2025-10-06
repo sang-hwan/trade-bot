@@ -1,5 +1,7 @@
+numpy>=1.26,<3.0
 pandas>=2.2.2,<3.0
 requests>=2.32.0
-yfinance>=0.2.40
+yfinance>=0.2.40,<0.3
 pyarrow>=14.0.0
 matplotlib>=3.8,<4.0
+tzdata>=2024.1

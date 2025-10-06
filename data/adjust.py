@@ -1,4 +1,4 @@
-# adjust.py
+# data/adjust.py
 """
 완전 조정(Adj) — 공개 API: apply(df)
 - 보정계수: a_t = AdjClose / close

@@ -1,0 +1,59 @@
+{
+  "note": "US small caps: TNDM, CWCO",
+  "base_currency": "USD",
+  "calendar_id": "XNAS",
+  "initial_cash": 10000.0,
+
+  "lot_step": 1,
+  "price_step": 0.01,
+  "tif": "OPG",
+
+  "engine": {
+    "N": 20,
+    "f": 0.02,
+    "epsilon": 0.0,
+    "sma_short": 10,
+    "sma_long": 50,
+    "lot_step": 1
+  },
+
+  "broker": {
+    "class": "KisBrokerAdapter",
+    "use_paper": false,
+
+    "app_key": "${KIS_APP_KEY}",
+    "app_secret": "${KIS_APP_SECRET}",
+    "cano": "${KIS_CANO}",
+    "acnt_prdt_cd": "${KIS_ACNT_PRDT_CD}",
+
+    "overseas_conf": {
+      "price_path": "/uapi/overseas-price/v1/quotations/foreign-stock-price",
+      "order_path": "/uapi/overseas-stock/v1/trading/order",
+
+      "fills_path": "/uapi/overseas-stock/v1/trading/inquire-executions", 
+
+      "tr": {
+        "price": "REPLACE_WITH_TR_ID_FOR_PRICE",
+        "buy":  { "NASD": "REPLACE_WITH_TR_ID_FOR_BUY_NASD"  },
+        "sell": { "NASD": "REPLACE_WITH_TR_ID_FOR_SELL_NASD" },
+        "fills": { "NASD": "REPLACE_WITH_TR_ID_FOR_FILLS_NASD" }
+      },
+
+      "price_step": {
+        "NASD": 0.01,
+        "NASD:TNDM": 0.01,
+        "NASD:CWCO": 0.01
+      }
+    }
+  },
+
+  "fee": {
+    "commission_rate": 0.0005,
+    "tax_rate_sell": 0.0
+  },
+
+  "assets": [
+    { "symbol": "NASD:TNDM", "currency": "USD", "lot_step": 1, "price_step": 0.01 },
+    { "symbol": "NASD:CWCO", "currency": "USD", "lot_step": 1, "price_step": 0.01 }
+  ]
+}

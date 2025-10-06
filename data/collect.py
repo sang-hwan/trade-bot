@@ -1,6 +1,6 @@
 # data/collect.py
 """
-OHLCV 수집 → UTC DatetimeIndex → 표준 컬럼화(open, high, low, close[, volume, AdjClose])
+OHLCV 수집 → UTC DatetimeIndex → 표준 컬럼(open, high, low, close[, volume, AdjClose])
 
 공개 API
 - fetch_yahoo_ohlcv(symbol, start=None, end=None, interval='1d') -> pd.DataFrame
@@ -12,7 +12,7 @@ OHLCV 수집 → UTC DatetimeIndex → 표준 컬럼화(open, high, low, close[,
 - 인덱스: DatetimeIndex(tz='UTC'), 오름차순, 중복 제거
 - 필수 컬럼: open, high, low, close (float)
 - 선택 컬럼: volume (float), AdjClose (주식)
-- 메타: meta={"price_currency": ...} (상위 qv_meta 연계용)
+- 메타: meta={"price_currency": ...}
 """
 
 from __future__ import annotations
@@ -21,7 +21,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-import time  # API rate-limit 보호에 사용
+import json
+import time
+import urllib.parse
+import urllib.request
+from urllib.error import HTTPError, URLError
+
 import pandas as pd
 
 __all__ = [
@@ -32,18 +37,16 @@ __all__ = [
 ]
 
 
-# ───────────────────────────────
-# 공용 유틸
-# ───────────────────────────────
+# ── 공용 유틸 ─────────────────────────────────────────────────────────────────
 
 def _as_utc_ts(x: str | datetime | pd.Timestamp) -> pd.Timestamp:
-    """문자열/Datetime을 tz-aware UTC Timestamp로 변환."""
+    """문자열/Datetime → tz-aware UTC Timestamp."""
     ts = pd.Timestamp(x)
     return ts.tz_localize(timezone.utc) if ts.tzinfo is None else ts.tz_convert(timezone.utc)
 
 
 def _to_utc_index(idx: Iterable) -> pd.DatetimeIndex:
-    """임의 인덱스를 UTC로 통일하고 정렬·중복 제거."""
+    """인덱스를 UTC로 통일하고 정렬·중복 제거."""
     di = pd.DatetimeIndex(idx)
     di = di.tz_localize(timezone.utc) if di.tz is None else di.tz_convert(timezone.utc)
     return pd.DatetimeIndex(di.sort_values().unique())
@@ -58,14 +61,14 @@ def _enforce_ohlc_types(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _drop_dup_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """중복 컬럼 제거(동일 이름이 여러 개면 마지막 것 유지)."""
+    """동일 컬럼명 중복 제거(마지막 것 유지)."""
     if not isinstance(df.columns, pd.Index):
         return df
     return df.loc[:, ~df.columns.duplicated(keep="last")]
 
 
 def _drop_dupes_sort(df: pd.DataFrame) -> pd.DataFrame:
-    """중복 제거 후 시계열 정렬."""
+    """중복 인덱스 제거 후 정렬."""
     df = df[~df.index.duplicated(keep="last")]
     return df.sort_index()
 
@@ -77,7 +80,7 @@ def _map_yahoo_interval(iv: str) -> str:
 
 
 def _map_upbit_interval(iv: str) -> str:
-    """사용자 인터벌 → Upbit 일/주/월 엔드포인트 키."""
+    """사용자 인터벌 → Upbit 엔드포인트 키."""
     ivu = iv.lower()
     if ivu in ("1d", "day", "1day"):
         return "days"
@@ -112,9 +115,7 @@ def _infer_price_currency(source: str, symbol: str) -> str:
     return "USD"
 
 
-# ───────────────────────────────
-# 원천별 수집
-# ───────────────────────────────
+# ── 원천별 수집 ────────────────────────────────────────────────────────────────
 
 def fetch_yahoo_ohlcv(
     symbol: str,
@@ -124,7 +125,7 @@ def fetch_yahoo_ohlcv(
 ) -> pd.DataFrame:
     """Yahoo Finance OHLCV(+AdjClose) → 표준 스키마."""
     try:
-        import yfinance as yf  # 서드파티
+        import yfinance as yf  # 서드파티(선호 X, 필요 시 사용)
     except ImportError as e:
         raise RuntimeError("yfinance가 필요합니다. pip install yfinance") from e
 
@@ -133,7 +134,7 @@ def fetch_yahoo_ohlcv(
     if start:
         kwargs["start"] = _as_utc_ts(start).to_pydatetime()
     if end:
-        # yfinance는 end 비포함 → 다음날 00:00으로 보정
+        # yfinance end는 비포함 → 다음날 00:00 보정
         kwargs["end"] = (_as_utc_ts(end) + pd.Timedelta(days=1)).to_pydatetime()
 
     dl = yf.download(
@@ -142,18 +143,15 @@ def fetch_yahoo_ohlcv(
         auto_adjust=False,
         progress=False,
         group_by="column",
-        **kwargs
+        **kwargs,
     )
     if not isinstance(dl, pd.DataFrame) or dl.empty:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-    
+
     if isinstance(dl.columns, pd.MultiIndex):
         lvl0 = {str(x).lower() for x in dl.columns.get_level_values(0)}
         ohlcv = {"open", "high", "low", "close", "adj close", "volume"}
-        if len(ohlcv & lvl0) >= 3:
-            dl = dl.droplevel(1, axis=1)
-        else:
-            dl = dl.droplevel(0, axis=1)
+        dl = dl.droplevel(1, axis=1) if len(ohlcv & lvl0) >= 3 else dl.droplevel(0, axis=1)
 
     dl = dl.rename(
         columns={
@@ -162,7 +160,8 @@ def fetch_yahoo_ohlcv(
         }
     )
     if isinstance(dl.columns, pd.MultiIndex):
-        raise ValueError("Yahoo 데이터 컬럼이 여전히 MultiIndex입니다. 단일 티커로 재시도하세요.")
+        raise ValueError("Yahoo 컬럼이 여전히 MultiIndex입니다. 단일 티커로 요청하세요.")
+
     dl = _drop_dup_columns(dl)
     dl.index = _to_utc_index(dl.index)
 
@@ -192,14 +191,11 @@ def fetch_upbit_ohlcv(
     interval: str = "1d",
     *,
     max_rows: int = 200,
-    session=None,
+    session=None,  # 유지(호환 목적). 현재 구현은 표준 라이브러리 사용.
 ) -> pd.DataFrame:
     """Upbit Public API(무인증): 일/주/월 봉 → 표준 스키마."""
-    import requests
-
     endpoint_kind = _map_upbit_interval(interval)
     base_url = f"https://api.upbit.com/v1/candles/{endpoint_kind}"
-    sess = session or requests.Session()
 
     dt_start = _as_utc_ts(start) if start else None
     dt_end = _as_utc_ts(end) if end else None
@@ -208,13 +204,24 @@ def fetch_upbit_ohlcv(
 
     while True:
         params = {"market": market, "count": max_rows}
-        # Upbit 'to'는 KST 기준 문자열
+        # Upbit 'to'는 KST 문자열 요구
         to_kst = to_cursor.tz_convert("Asia/Seoul")
         params["to"] = to_kst.strftime("%Y-%m-%d %H:%M:%S")
 
-        r = sess.get(base_url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
+        url = base_url + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+                data = json.loads(raw.decode("utf-8"))
+        except HTTPError as e:
+            detail = e.read().decode("utf-8") if e.fp else ""
+            raise RuntimeError(f"Upbit HTTP {e.code} {detail}") from None
+        except URLError as e:
+            raise RuntimeError(f"Upbit 연결 오류: {e.reason}") from None
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Upbit JSON 오류: {e}") from None
+
         if not data:
             break
 
@@ -233,7 +240,8 @@ def fetch_upbit_ohlcv(
         df = _drop_dup_columns(df)
         frames.append(df)
 
-        last_ts = df.index.min()  # 최신순 반환 → min이 과거
+        # Upbit는 최신→과거 순으로 반환 → min()이 더 과거
+        last_ts = df.index.min()
         if dt_start and last_ts <= dt_start:
             break
         to_cursor = (last_ts - pd.Timedelta(seconds=1)).tz_convert(timezone.utc)
@@ -255,9 +263,7 @@ def fetch_upbit_ohlcv(
     return dl[["open", "high", "low", "close", "volume"]]
 
 
-# ───────────────────────────────
-# 수집 파사드
-# ───────────────────────────────
+# ── 수집 파사드 ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class CollectResult:
@@ -279,10 +285,7 @@ def collect(
     calendar_id: str | None = None,
     price_currency: str | None = None,
 ) -> CollectResult:
-    """
-    원천별 수집 후 UTC·표준화 완료된 DataFrame과 메타를 반환.
-    meta['price_currency']는 qv_meta(...)의 FX 필요 판단에 사용 가능.
-    """
+    """원천별 수집 후 UTC·표준화 DataFrame과 메타를 반환."""
     src = source.lower()
     if src == "yahoo":
         df = fetch_yahoo_ohlcv(symbol, start=start, end=end, interval=interval)
@@ -298,9 +301,7 @@ def collect(
     raise ValueError(f"Unsupported source: {source}")
 
 
-# ───────────────────────────────
-# CLI (선택)
-# ───────────────────────────────
+# ── CLI (선택) ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse

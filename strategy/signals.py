@@ -1,4 +1,4 @@
-# signals.py
+# strategy/signals.py
 """
 전략/신호 단계: SMA10/50 크로스(롱 온리) 신호 생성.
 

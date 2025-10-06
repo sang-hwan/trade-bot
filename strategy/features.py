@@ -1,4 +1,4 @@
-# features.py
+# strategy/features.py
 """
 피처 생성: SMA와 Donchian '이전 N-저가' 기준선.
 

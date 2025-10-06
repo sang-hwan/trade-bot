@@ -1,4 +1,4 @@
-# snapshot.py
+# data/snapshot.py
 """
 스냅샷 고정(Parquet 저장 + SHA-256 해시 + 메타 생성).
 

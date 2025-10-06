@@ -1,13 +1,13 @@
-# sizing_spec.py
+# strategy/sizing_spec.py
 """
 전략/사이징 스펙: Fixed Fractional **스펙만** 산출한다(수량/체결 계산 금지).
 
-- 타이밍(롱): 엔트리 Open(t)에서 사용할 스탑 레벨은 `prev_low_N(t-1)`
+- 타이밍(롱): 엔트리 Open(t)에서 사용할 스탑 레벨은 prev_low_N(t-1)
 - 출력: index=df.index, columns=['f','stop_level','lot_step','V','PV']
   * f: 위험 비율 (0 < f ≤ 1)
-  * stop_level: prev_low_N(t-1)  # 결정=Close(t-1), 집행=Open(t) 규약과 합치
+  * stop_level: prev_low_N(t-1)  # 결정=Close(t-1), 집행=Open(t)
   * lot_step: 최소 수량/호가 단위 s (> 0)
-  * V: 선물 승수(필요 시), PV: FX pip 값(필요 시) — 없으면 <NA>
+  * V: 선물 승수(선택), PV: FX pip 값(선택) — 없으면 <NA>
 
 공개 API
 - build_fixed_fractional_spec(df, *, N, f, lot_step, low_col=None, V=None, PV=None) -> pd.DataFrame
@@ -51,6 +51,15 @@ def _ensure_pos_num(value: float, *, name: str) -> float:
     return v
 
 
+def _ensure_df_ok(df: pd.DataFrame, low_col: str | None) -> None:
+    """df 존재/빈값/필수 컬럼('low' 또는 low_col) 확인."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise SizingSpecError("df must be a non-empty DataFrame")
+    col = low_col or "low"
+    if col not in df.columns:
+        raise SizingSpecError(f"'{col}' column is required in df")
+
+
 def build_fixed_fractional_spec(
     df: pd.DataFrame,
     *,
@@ -62,11 +71,11 @@ def build_fixed_fractional_spec(
     PV: float | None = None,
 ) -> pd.DataFrame:
     """
-    Fixed Fractional 사이징 스펙 시계열을 생성한다.
-
-    - stop_level = prev_low_N(t-1) (룩어헤드 금지, 시뮬레이터 On-Open 계산 전제)
-    - 수량(Q)·라운딩·수수료/슬리피지는 시뮬레이션 단계 책임(여기서 계산하지 않음).
+    Fixed Fractional 사이징 스펙 시계열 생성.
+    - stop_level = prev_low_N(t-1) (룩어헤드 금지, On-Open 전제)
+    - 수량/라운딩/수수료/슬리피지는 시뮬레이션 단계 책임.
     """
+    _ensure_df_ok(df, low_col)
     _ensure_pos_int(N, name="N")
     f_val = _ensure_frac(f, name="f")
     lot_val = _ensure_pos_num(lot_step, name="lot_step")
