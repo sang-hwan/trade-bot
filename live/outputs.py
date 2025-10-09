@@ -1,56 +1,58 @@
 # live/outputs.py
 """
-목적:
-- 실매매 결과를 시뮬레이션과 동일 스키마로 정리/기록한다.
-- 산출물: trades, equity_curve, metrics, run_meta (+선택: 주문/체결 로그)
+목적: 실매매 결과를 시뮬레이션과 동일 스키마로 정리/기록.
+산출물: trades, equity_curve, metrics, run_meta (+선택: 주문/체결 로그)
 
-시간 규약:
-- 모든 타임스탬프 문자열은 UTC ISO8601(Z).
-
-파일 출력:
-- out_dir가 주어지면 CSV/JSON/JSONL로 기록(표준 라이브러리 우선).
+시간 규약: 모든 타임스탬프는 UTC ISO-8601("...Z").
+파일 출력: out_dir 제공 시 CSV/JSON/JSONL로 기록(표준 라이브러리 사용).
 """
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+from datetime import datetime, timezone
 import csv
 import json
 import os
 
-# 시뮬레이션 로직 재사용(가능 시). 실패하면 로컬 구현으로 대체.
+# 시뮬레이션 모듈 재사용(가능 시), 불가 시 로컬 계산으로 대체.
 try:
     from simulation.outputs import (  # type: ignore
         make_trades_df as _sim_make_trades_df,
         make_equity_curve as _sim_make_equity_curve_df,
         compute_metrics as _sim_compute_metrics,
     )
-except Exception:
+except ImportError:
     _sim_make_trades_df = None
     _sim_make_equity_curve_df = None
     _sim_compute_metrics = None
 
 
-# ---------- 정규화 유틸 ----------
+# ---------- 유틸 ----------
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def _as_float(x) -> float:
     return float(x)
 
+
 def _ensure_ts(x: str) -> str:
     return str(x).strip()
+
 
 def _sorted_by_ts(rows: List[dict]) -> List[dict]:
     return sorted(rows, key=lambda r: r.get("ts") or r.get("ts_utc") or "")
 
 
-# ---------- 공개 API: 빌더들 ----------
+# ---------- 정규화 빌더 ----------
 
 def make_trades(trades: Iterable[Mapping[str, object]]) -> List[dict]:
     """
     trades 정규화:
     - 최소 키: ts, symbol, side, qty, price, commission, reason
     - 정렬: ts 오름차순
-    - 추가 키(있으면 보존)
     """
     if _sim_make_trades_df is not None:
         df = _sim_make_trades_df(trades)  # pandas.DataFrame(ts 오름차순)
@@ -73,7 +75,7 @@ def make_trades(trades: Iterable[Mapping[str, object]]) -> List[dict]:
             norm.append(d)
         return _sorted_by_ts(norm)
 
-    # ── 로컬 fallback
+    # 로컬 fallback
     out: List[dict] = []
     for r in trades:
         d = dict(r)
@@ -91,7 +93,7 @@ def make_trades(trades: Iterable[Mapping[str, object]]) -> List[dict]:
 def make_equity_curve(points: Iterable[Mapping[str, object]]) -> List[dict]:
     """
     equity_curve 정규화:
-    - 각 원소: {"ts": "...Z", "equity": float}
+    - 원소: {"ts": "...Z", "equity": float}
     - 정렬: ts 오름차순
     """
     if _sim_make_equity_curve_df is not None:
@@ -99,9 +101,12 @@ def make_equity_curve(points: Iterable[Mapping[str, object]]) -> List[dict]:
         if getattr(ec, "empty", True):
             return []
         ec_reset = ec.reset_index()
-        return _sorted_by_ts([{"ts": _ensure_ts(str(ts)), "equity": _as_float(eq)}
-                              for ts, eq in zip(ec_reset["ts"], ec_reset["equity"])])
-    # ── 로컬 fallback
+        return _sorted_by_ts([
+            {"ts": _ensure_ts(str(ts)), "equity": _as_float(eq)}
+            for ts, eq in zip(ec_reset["ts"], ec_reset["equity"])
+        ])
+
+    # 로컬 fallback
     out: List[dict] = []
     for p in points:
         ts = _ensure_ts(p.get("ts", ""))
@@ -111,11 +116,7 @@ def make_equity_curve(points: Iterable[Mapping[str, object]]) -> List[dict]:
 
 
 def compute_metrics(equity_curve: List[Mapping[str, object]], trades: List[Mapping[str, object]]) -> Dict[str, object]:
-    """
-    기본 지표:
-    - 시뮬레이션 결과 우선(total_return/mdd/거래통계), 보조 필드(initial/final/trade_count) 보강
-    - 시뮬 모듈 부재 시 로컬 계산 사용
-    """
+    """기본 지표 계산: 시뮬레이션 모듈 우선, 불가 시 로컬 계산."""
     if _sim_compute_metrics is not None and _sim_make_equity_curve_df is not None and _sim_make_trades_df is not None:
         ec_df = _sim_make_equity_curve_df(equity_curve)
         initial_equity = float(ec_df["equity"].iloc[0]) if (getattr(ec_df, "empty", True) is False) else 0.0
@@ -135,7 +136,7 @@ def compute_metrics(equity_curve: List[Mapping[str, object]], trades: List[Mappi
             "profit_factor": sim_m.get("profit_factor"),
         }
 
-    # ── 로컬 fallback
+    # 로컬 fallback
     if not equity_curve:
         return {
             "initial_equity": 0.0,
@@ -189,39 +190,34 @@ def compute_metrics(equity_curve: List[Mapping[str, object]], trades: List[Mappi
     }
 
 
+# ---------- 메타 빌더 ----------
+
 def build_run_meta(
     *,
-    engine_params: Mapping[str, object] | None = None,
-    price_columns_used: Mapping[str, str] | None = None,
-    snapshot_meta: Mapping[str, object] | None = None,
-    broker_meta: Mapping[str, object] | None = None,
-    extra: Mapping[str, object] | None = None,
-    equity_curve: Iterable[Mapping[str, object]] | None = None,
-) -> Dict[str, object]:
-    """run_meta 표준화: 공통 필드 구성, 제공 메타 얕은 병합. start/end는 equity_curve 기준."""
-    meta: Dict[str, object] = {"schema_version": "1.0", "mode": "live"}
-    if engine_params:
-        meta["engine_params"] = dict(engine_params)
-    if price_columns_used:
-        meta["price_columns_used"] = dict(price_columns_used)
-    if snapshot_meta:
-        meta["snapshot_meta"] = dict(snapshot_meta)
-    if broker_meta:
-        meta["broker_meta"] = dict(broker_meta)
-    if extra:
-        meta.update(dict(extra))
-    if equity_curve:
-        ecs = make_equity_curve(equity_curve)
-        if ecs:
-            meta["start_ts"] = ecs[0]["ts"]
-            meta["end_ts"] = ecs[-1]["ts"]
-    return meta
+    mode: Optional[str] = None,
+    base_currency: str,
+    open_ts_utc: str,
+    plan: Optional[Mapping[str, Any]] = None,
+    broker_conf: Optional[Mapping[str, Any]] = None,
+    run_type: Optional[str] = None,  # 과거 호환
+) -> Dict[str, Any]:
+    """실행 메타 생성(호출부 시그니처와 정합)."""
+    run_mode = mode or run_type or "live"
+    return {
+        "schema_version": "1.0",
+        "mode": run_mode,
+        "base_currency": base_currency,
+        "open_ts_utc": open_ts_utc,
+        "plan": dict(plan or {}),
+        "broker_conf": dict(broker_conf or {}),
+        "created_utc": _utc_now_iso(),
+    }
 
 
 # ---------- 파일 기록 ----------
 
 def _write_csv(path: str, rows: List[Mapping[str, object]]) -> None:
-    # 헤더는 모든 키의 합집합(필수 키 우선); 데이터가 없어도 헤더 기록
+    # 헤더: 필수 키 우선 + 합집합
     preferred = ["ts", "symbol", "side", "qty", "price", "commission", "tax", "reason", "equity"]
     keys: List[str] = list(preferred)
     seen = set(preferred)
@@ -236,9 +232,11 @@ def _write_csv(path: str, rows: List[Mapping[str, object]]) -> None:
         for r in rows or []:
             w.writerow({k: r.get(k, "") for k in keys})
 
+
 def _write_json(path: str, obj: Mapping[str, object]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
+
 
 def _write_jsonl(path: str, rows: Iterable[Mapping[str, object]]) -> None:
     with open(path, "w", encoding="utf-8") as f:
@@ -256,11 +254,7 @@ def write_outputs(
     orders_log: Iterable[Mapping[str, object]] | None = None,
     fills_log: Iterable[Mapping[str, object]] | None = None,
 ) -> Dict[str, str]:
-    """
-    디스크에 산출물을 기록하고 경로 맵을 반환.
-    - trades.csv / equity_curve.csv / metrics.json / run_meta.json
-    - orders.jsonl / fills.jsonl (옵션)
-    """
+    """디스크 기록 후 경로 맵 반환."""
     os.makedirs(out_dir, exist_ok=True)
     paths = {
         "trades_csv": os.path.join(out_dir, "trades.csv"),
@@ -272,7 +266,6 @@ def write_outputs(
     _write_csv(paths["equity_curve_csv"], make_equity_curve(equity_curve))
     _write_json(paths["metrics_json"], dict(metrics))
     _write_json(paths["run_meta_json"], dict(run_meta))
-
     if orders_log is not None:
         p = os.path.join(out_dir, "orders.jsonl")
         _write_jsonl(p, orders_log)
@@ -284,38 +277,53 @@ def write_outputs(
     return paths
 
 
+# ---------- 패키징 ----------
+
 def finalize_outputs(
+    *,
+    out_dir: Optional[str] = None,
     trades: Iterable[Mapping[str, object]],
     equity_curve: Iterable[Mapping[str, object]],
     run_meta: Mapping[str, object],
-    *,
-    out_dir: Optional[str] = None,
+    metrics: Optional[Mapping[str, object]] = None,
+    artifacts: Optional[Mapping[str, object]] = None,
     orders_log: Iterable[Mapping[str, object]] | None = None,
     fills_log: Iterable[Mapping[str, object]] | None = None,
 ) -> Dict[str, object]:
     """
     산출물 패키징:
-    - metrics는 equity_curve와 trades에서 계산
-    - out_dir가 있으면 파일 기록 후 경로(artifacts) 포함
+    - metrics 미제공 시 내부 계산
+    - out_dir 제공 시 파일 기록 후 파일 경로를 artifacts에 병합
+    - artifacts 인자가 있으면 보존(orders/fills 목록 등)
     """
     tlist = make_trades(trades)
     elist = make_equity_curve(equity_curve)
-    metrics = compute_metrics(elist, tlist)
-    artifacts: Dict[str, str] = {}
+    mcalc = dict(metrics) if metrics is not None else compute_metrics(elist, tlist)
+
+    ret_artifacts: Dict[str, object] = {}
+    if artifacts:
+        ret_artifacts.update(dict(artifacts))
+
+    orders_src = ret_artifacts.get("orders") if "orders" in ret_artifacts else orders_log
+    fills_src = ret_artifacts.get("fills") if "fills" in ret_artifacts else fills_log
+
+    file_paths: Dict[str, str] = {}
     if out_dir:
-        artifacts = write_outputs(
+        file_paths = write_outputs(
             out_dir,
             trades=tlist,
             equity_curve=elist,
-            metrics=metrics,
+            metrics=mcalc,
             run_meta=run_meta,
-            orders_log=orders_log,
-            fills_log=fills_log,
+            orders_log=orders_src if isinstance(orders_src, Iterable) else None,
+            fills_log=fills_src if isinstance(fills_src, Iterable) else None,
         )
+        ret_artifacts.update(file_paths)
+
     return {
         "trades": tlist,
         "equity_curve": elist,
-        "metrics": metrics,
+        "metrics": mcalc,
         "run_meta": dict(run_meta),
-        "artifacts": artifacts,
+        "artifacts": ret_artifacts,
     }

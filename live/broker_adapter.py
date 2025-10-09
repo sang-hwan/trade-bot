@@ -20,10 +20,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 import json
+import sys
 import time
 import urllib.parse
 import urllib.request
 from urllib.error import HTTPError, URLError
+
+# Python 3.11+ 요구
+if sys.version_info < (3, 11):
+    raise SystemExit("Python 3.11+ required.")
 
 # 시뮬레이션 라운딩 재사용(가능 시). 모듈/속성 부재만 허용.
 try:
@@ -241,18 +246,28 @@ class KisBrokerAdapter(BrokerAdapter):
         return OrderResult(ok=True, order_id=oid, raw=raw)
 
     def _fetch_price_overseas(self, pdno: str, market: Optional[str]) -> Tuple[float, Dict[str, Any]]:
+        """해외 현재가: /uapi/overseas-price/v1/quotations/price (EXCD/SYMB 사용)."""
         if market is None:
             raise BrokerError("해외 시세는 market 코드가 필요합니다.")
-        oc = self.overseas_conf
-        price_path = oc.get("price_path")
-        tr_id = oc.get("tr", {}).get("price")
-        if not (price_path and tr_id):
-            raise BrokerError("해외 시세 설정 누락: price_path/tr.price")
+
+        # 기본 경로/트랜잭션 ID(설정에서 덮어쓰기 가능)
+        oc = self.overseas_conf or {}
+        price_path = oc.get("price_path") or "/uapi/overseas-price/v1/quotations/price"
+        default_tr = "HHDFS00000300"  # 해외 현재가(REST)
+        tr_id = oc.get("tr", {}).get("price") or default_tr
+
+        # 거래소 코드 4→3글자 매핑
+        exch_map = {"NASD": "NAS", "NYSE": "NYS", "NAS": "NAS", "NYS": "NYS", "AMEX": "AMEX"}
+        excd = exch_map.get(market, market)
+
         self._ensure_token()
-        params = {"OVRS_EXCG_CD": market, "PDNO": pdno}
+        params = {"AUTH": "", "EXCD": excd, "SYMB": pdno}
         headers = self._headers(tr_id, need_auth=True)
         data = self._request_json("GET", price_path, headers, params=params)
-        price = float(data.get("output", {}).get("last", data.get("output", {}).get("ovrs_prpr", 0.0)))
+
+        # 응답 포맷 호환: 'last' 우선, 없으면 'ovrs_prpr'
+        output = data.get("output", {}) if isinstance(data, dict) else {}
+        price = float(output.get("last", output.get("ovrs_prpr", 0.0)))
         return price, data
 
     # ----- 내부 유틸 -----

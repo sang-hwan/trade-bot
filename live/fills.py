@@ -1,21 +1,16 @@
 # live/fills.py
 """
 KIS 체결 수집 헬퍼 (Python 3.11+)
-공개 API(핵심)
-- collect_fills_loop(broker, *, fills_path, tr_fills, market, seconds, extra_params=None) -> list[dict]
-  지정 초(seconds) 동안 폴링하여 체결 리스트를 UTC ISO-8601("...Z") 타임스탬프로 반환.
 
-타이밍/규약
-- 체결 타임스탬프는 브로커 응답의 (exec_dt, exec_tm) 조합을 사용하고, 파싱 실패 시 현재 UTC를 사용.
-- 중복 방지: 동일(ts_utc|symbol|side|qty|price) 레코드는 1회만 포함.
-
-예외 처리 근거
-- 브로커 호출/파싱 시 BrokerError는 폴링 루프 내에서 경고만 남기고 계속 진행(단일 실패로 중단 방지).
+공개 API: collect_fills_loop(...)-> list[dict]
+- 지정 초(seconds) 동안 폴링하여 UTC ISO-8601("...Z")로 반환
+- 중복 키: ts_utc|symbol|side|qty|price
+- 예외: BrokerError는 경고만 출력하고 계속 진행
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 from datetime import datetime, timezone
 import sys
 import time
@@ -34,8 +29,13 @@ def _first(*vals):
     return None
 
 
-def _map_fill_row(row: Dict[str, Any], *, market: str, default_reason: str = "signal") -> Optional[Dict[str, Any]]:
-    """KIS 체결 응답 → 표준 fills 레코드(dict)로 매핑."""
+def _map_fill_row(
+    row: dict[str, Any],
+    *,
+    market: str,
+    default_reason: str = "signal",
+) -> dict[str, Any] | None:
+    """브로커 체결 응답 → 표준 레코드."""
     code = _first(row.get("PDNO"), row.get("pdno"), row.get("symbol"), row.get("issue_code"))
     if not code:
         return None
@@ -86,38 +86,104 @@ def _map_fill_row(row: Dict[str, Any], *, market: str, default_reason: str = "si
     }
 
 
-def _pick_tr_id(tr_fills: Any, market: str) -> Optional[str]:
+def _pick_tr_id(tr_fills: Any, market: str, *, broker: KisBrokerAdapter | None = None) -> str | None:
+    """TR ID 결정: 인자 → broker.overseas_conf.tr.fills."""
     if isinstance(tr_fills, str):
         return tr_fills
     if isinstance(tr_fills, dict):
         return tr_fills.get(market) or tr_fills.get("default")
+    if broker is not None:
+        conf = getattr(broker, "overseas_conf", {}) or {}
+        tr = conf.get("tr", {}) or {}
+        val = tr.get("fills")
+        if isinstance(val, str):
+            return val
+        if isinstance(val, dict):
+            return val.get(market) or val.get("default")
     return None
+
+
+def _pick_fills_path(fills_path: str | None, *, broker: KisBrokerAdapter | None = None) -> str | None:
+    """경로 결정: 인자 → broker.overseas_conf의 흔한 키."""
+    if isinstance(fills_path, str) and fills_path:
+        return fills_path
+    if broker is None:
+        return None
+    conf = getattr(broker, "overseas_conf", {}) or {}
+    for c in (
+        conf.get("fills_path"),
+        (conf.get("paths", {}) or {}).get("fills"),
+        (conf.get("path", {}) or {}).get("fills"),
+        (conf.get("endpoints", {}) or {}).get("fills"),
+        (conf.get("urls", {}) or {}).get("fills"),
+    ):
+        if isinstance(c, str) and c:
+            return c
+    return None
+
+
+def _market_to_codes(market: str) -> dict[str, str]:
+    """시장 문자열 → 국가/시장/거래소 코드."""
+    m = (market or "").upper()
+    natn_cd = "840"  # USA
+    tr_mket_cd_map = {"NASD": "01", "NYSE": "02", "AMEX": "05"}
+    excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+    return {
+        "NATN_CD": natn_cd,
+        "TR_MKET_CD": tr_mket_cd_map.get(m, "00"),
+        "EXCD": excd_map.get(m, ""),
+    }
 
 
 def _fetch_fills_once(
     broker: KisBrokerAdapter,
     *,
-    fills_path: str,
-    tr_fills: Any,
+    fills_path: str | None = None,
+    tr_fills: Any = None,
     market: str,
-    extra_params: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """브로커에서 체결 1회 조회."""
+    extra_params: dict[str, Any] | None = None,
+    default_reason: str = "signal",
+) -> list[dict[str, Any]]:
+    """체결 1회 조회. 실패 시 BrokerError 전파."""
     broker._ensure_token()
-    tr_id = _pick_tr_id(tr_fills, market)
+    tr_id = _pick_tr_id(tr_fills, market, broker=broker)
+    path = _pick_fills_path(fills_path, broker=broker)
     if not tr_id:
-        raise BrokerError("TR_ID for fills is missing")
+        raise BrokerError("TR_ID for fills is missing (pass tr_fills or set broker.overseas_conf.tr.fills)")
+    if not path:
+        raise BrokerError("fills_path is missing (pass fills_path or set broker.overseas_conf.*.fills)")
+
     headers = broker._headers(tr_id, need_auth=True)  # type: ignore[attr-defined]
-    params = {"OVRS_EXCG_CD": market}
+
+    # 필수 기본 파라미터(계좌/통화/국가/시장/조회구분)
+    cano = getattr(broker, "cano", None)
+    acnt = getattr(broker, "acnt_prdt_cd", "01")
+    if not cano or not acnt:
+        raise BrokerError("CANO/ACNT_PRDT_CD is missing on broker adapter")
+    mkt = _market_to_codes(market)
+
+    params: dict[str, Any] = {
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt,
+        "WCRC_FRCR_DVSN_CD": "02",
+        "NATN_CD": mkt["NATN_CD"],
+        "TR_MKET_CD": mkt["TR_MKET_CD"],
+        "INQR_DVSN_CD": "00",
+        "EXCD": mkt["EXCD"],
+        "OVRS_EXCG_CD": market,
+    }
     if extra_params:
         params.update(extra_params)
-    data = broker._request_json("GET", fills_path, headers, params=params)  # type: ignore[attr-defined]
+
+    data = broker._request_json("GET", path, headers, params=params)  # type: ignore[attr-defined]
+
     rows = data.get("output") or data.get("output1") or data.get("results") or []
     if not isinstance(rows, list):
         rows = []
-    out: List[Dict[str, Any]] = []
+
+    out: list[dict[str, Any]] = []
     for r in rows:
-        m = _map_fill_row(r, market=market)
+        m = _map_fill_row(r, market=market, default_reason=default_reason)
         if m:
             out.append(m)
     return out
@@ -126,25 +192,30 @@ def _fetch_fills_once(
 def collect_fills_loop(
     broker: KisBrokerAdapter,
     *,
-    fills_path: str,
-    tr_fills: Any,
-    market: str,
-    seconds: int,
-    extra_params: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
+    fills_path: str | None = None,
+    tr_fills: Any = None,
+    market: str = "",
+    seconds: int = 0,
+    extra_params: dict[str, Any] | None = None,
+    default_reason: str = "signal",
+    **kwargs,
+) -> list[dict[str, Any]]:
     """
-    지정 초(seconds) 동안 폴링하여 체결을 수집.
-    - BrokerError 발생 시 경고만 출력하고 계속 시도(중단 없음).
-    - 중복 레코드는 제거.
+    seconds 동안 폴링하며 체결 수집.
+    - BrokerError: 경고만 출력 후 계속 진행
+    - 중복 제거: ts_utc|symbol|side|qty|price
     """
     if seconds <= 0:
         return []
 
+    if extra_params is None and "params" in kwargs:  # 하위호환
+        extra_params = kwargs["params"]
+
     deadline = time.time() + int(seconds)
-    acc: List[Dict[str, Any]] = []
+    acc: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def _key(r: Dict[str, Any]) -> str:
+    def _key(r: dict[str, Any]) -> str:
         return f"{r['ts_utc']}|{r['symbol']}|{r['side']}|{r['qty']}|{r['price']}"
 
     while True:
@@ -155,6 +226,7 @@ def collect_fills_loop(
                 tr_fills=tr_fills,
                 market=market,
                 extra_params=extra_params,
+                default_reason=default_reason,
             )
             for r in sorted(rows, key=lambda x: x["ts_utc"]):
                 k = _key(r)
