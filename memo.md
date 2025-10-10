@@ -95,38 +95,114 @@ deactivate                                      # 가상환경 비활성화
 ---
 
 ```powershell
-# --------------------------- # 섹션: 가상환경 & 의존성
-python -m venv .venv
+# --------------------------- # 섹션: 가상환경
 .\.venv\Scripts\Activate.ps1
 
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+# =========================== 안정화 래퍼 (미국장 세션 전용) ===========================
+# - 콘솔 즉시 종료 방지, 오류 표시 강화, 작업 디렉터리 고정
+# - 미국 정규장(ET 09:30–16:00) 동안만 run_live.py --loop 실행
+# - 개장 5분 전 시작, 마감+5분까지 유지 (DST 자동 반영)
 
-# --------------------------- # 섹션: 유틸 함수
-function Invoke-Live { param([string[]]$ArgList) & python .\run_live.py @ArgList; if ($LASTEXITCODE -ne 0) { throw "run_live.py failed (exit $LASTEXITCODE)" } }
+$ErrorActionPreference = 'Stop'
 
-# --------------------------- # 섹션: run_live.py — AUTO (NASD: TNDM, CWCO)
-$DATE      = Get-Date -Format "yyyyMMdd"
-$RUN_DIR   = ".\live_runs\$DATE`_NASD_TNDM_CWCO"
-$PLAN_DIR  = "$RUN_DIR\plan"
-$CFG_PATH  = ".\config.live.json"
-$FILLS_LOG = "$RUN_DIR\fills.jsonl"
+# 안전한 루트 탐지: PSScriptRoot → MyInvocation → 현재 폴더
+if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
+  $ROOT = $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+  $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+  $ROOT = (Get-Location).Path
+}
+Set-Location $ROOT
 
-New-Item -ItemType Directory -Force -Path $RUN_DIR  | Out-Null
-New-Item -ItemType Directory -Force -Path $PLAN_DIR | Out-Null
+function Invoke-Live {
+  param([string[]]$ArgList)
+  & python .\run_live.py @ArgList
+  $exit = $LASTEXITCODE
+  if ($exit -ne 0) { Write-Error "run_live.py failed (exit $exit)" }
+  return $exit
+}
 
-$ArgsLive = @(
-  '--config',   $CFG_PATH,     # 실행 설정(JSON)
-  '--out',      $RUN_DIR,      # 산출물 디렉터리
-  '--source',   'yahoo',       # AUTO 계획 산출용 데이터 소스(D-1 종가)
-  '--interval', '1d',          # 일봉
-  '--plan-out', $PLAN_DIR,     # 계획(stops/signals/rebal) 저장
-  '--collect-fills',           # 체결: KIS 단기 폴링
-  '--market',   'NASD',        # TNDM/CWCO 시장
-  '--collect-seconds','15',    # 폴링 시간(초)
-  '--fills-out', $FILLS_LOG    # 수집 체결 로그(JSONL)
-)
-Invoke-Live -ArgList $ArgsLive
+try {
+  # --- 경로/출력 준비 ---
+  $DATE      = Get-Date -Format 'yyyyMMdd'
+  $RUN_DIR   = ".\live_runs\${DATE}_NASD_TNDM_CWCO"
+  $PLAN_DIR  = "$RUN_DIR\plan"
+  $CFG_PATH  = ".\config.live.json"
+  $FILLS_LOG = "$RUN_DIR\fills.jsonl"
+
+  New-Item -ItemType Directory -Force -Path $RUN_DIR  | Out-Null
+  New-Item -ItemType Directory -Force -Path $PLAN_DIR | Out-Null
+
+  if (-not (Test-Path .\run_live.py)) { throw "run_live.py not found in $((Get-Location).Path)" }
+
+  # --- 타임존 계산 (DST 자동), 주말 스킵 ---
+  $tzET  = [System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time')
+  $tzKST = [System.TimeZoneInfo]::FindSystemTimeZoneById('Korea Standard Time')
+
+  $nowUtc = (Get-Date).ToUniversalTime()
+  $nowET  = [System.TimeZoneInfo]::ConvertTimeFromUtc($nowUtc, $tzET)
+
+  if ($nowET.DayOfWeek -in @('Saturday','Sunday')) {
+    Write-Host "[info] U.S. market closed today (weekend). Exiting."
+    exit 0
+  }
+
+  # ET “벽시각”을 Kind=Unspecified로 생성 후 ET→KST 변환
+  $openET  = [datetime]::new($nowET.Year, $nowET.Month, $nowET.Day, 9, 30, 0)   # 09:30 (ET)
+  $closeET = [datetime]::new($nowET.Year, $nowET.Month, $nowET.Day, 16, 0, 0)   # 16:00 (ET)
+
+  $openKST  = [System.TimeZoneInfo]::ConvertTime($openET,  $tzET, $tzKST)
+  $closeKST = [System.TimeZoneInfo]::ConvertTime($closeET, $tzET, $tzKST)
+
+  # 개장 5분 전 시작, 마감+5분까지 유지
+  $startAt = $openKST.AddMinutes(-5)
+  $endAt   = $closeKST.AddMinutes(5)
+  $nowKST  = [System.TimeZoneInfo]::ConvertTimeFromUtc($nowUtc, $tzKST)
+
+  if ($nowKST -lt $startAt) {
+    $waitSec = [int]([TimeSpan]($startAt - $nowKST)).TotalSeconds
+    Write-Host "[info] Waiting until $($startAt.ToString('yyyy-MM-dd HH:mm:ss K')) KST to start..."
+    Start-Sleep -Seconds $waitSec
+    # 대기 후 현재시각 갱신
+    $nowUtc = (Get-Date).ToUniversalTime()
+  } elseif ($nowKST -ge $endAt) {
+    Write-Host "[info] U.S. session already finished for today. Exiting."
+    exit 0
+  }
+
+  # 최대 실행 시간(초): 지금~(마감+5분)
+  $nowKST = [System.TimeZoneInfo]::ConvertTimeFromUtc($nowUtc, $tzKST)
+  $maxRuntimeSec = [int]([TimeSpan]($endAt - $nowKST)).TotalSeconds
+  if ($maxRuntimeSec -le 0) { $maxRuntimeSec = 60 }
+
+  # --- run_live 실행 (루프 모드) ---
+  $ArgsLive = @(
+    '--config',   $CFG_PATH,
+    '--out',      $RUN_DIR,
+    '--source',   'yahoo',
+    '--interval', '1d',
+    '--plan-out', $PLAN_DIR,
+    '--collect-fills',
+    '--market',   'NASD',
+    '--fills-out', $FILLS_LOG,
+    '--loop',
+    '--poll-fills-every', '5',     # 체결 폴링 주기(초)
+    '--reconcile-every',  '30',    # 대사/산출물 주기(초)
+    '--max-runtime',      "$maxRuntimeSec"
+  )
+
+  $code = Invoke-Live -ArgList $ArgsLive
+  if ($code -ne 0) { exit $code }
+}
+catch {
+  Write-Error $_
+}
+finally {
+  if ($Host.Name -match 'ConsoleHost') {
+    [void](Read-Host "Press ENTER to close")
+  }
+}
 
 # --------------------------- # 섹션: 가상환경 비활성화
 deactivate

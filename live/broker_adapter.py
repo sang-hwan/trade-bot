@@ -18,7 +18,7 @@ KIS(한국투자증권) Open API 실매매 어댑터.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 import json
 import sys
 import time
@@ -40,7 +40,15 @@ except (ImportError, AttributeError):
 # ---------- 공용 인터페이스 ----------
 
 class BrokerError(RuntimeError):
-    """브로커 API 오류."""
+    """브로커 API 오류. code/raw/req를 포함해 상위에서 분기 가능."""
+    def __init__(self, message: str, *, code: Optional[str] = None, raw: Optional[dict] = None, req: Optional[dict] = None):
+        super().__init__(message)
+        self.code = code
+        self.raw = raw or {}
+        self.req = req or {}
+    def __str__(self) -> str:
+        c = f"[{self.code}] " if self.code else ""
+        return f"{c}{super().__str__()}"
 
 
 class AuthError(BrokerError):
@@ -60,16 +68,19 @@ class OrderRequest:
 class OrderResult:
     ok: bool
     order_id: Optional[str]
-    raw: Dict[str, Any]
+    raw: dict[str, Any]
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    request: Optional[dict[str, Any]] = None
 
 
 class BrokerAdapter:
     """실매매 어댑터 공개 계약(간결)."""
     def place_order(self, req: OrderRequest) -> OrderResult: ...
-    def cancel_order(self, order_id: str, *, market: Optional[str] = None) -> Dict[str, Any]: ...
-    def fetch_positions(self) -> Dict[str, Any]: ...
-    def fetch_cash(self) -> Dict[str, Any]: ...
-    def fetch_price(self, symbol: str) -> Tuple[float, Dict[str, Any]]: ...
+    def cancel_order(self, order_id: str, *, market: Optional[str] = None) -> dict[str, Any]: ...
+    def fetch_positions(self) -> dict[str, Any]: ...
+    def fetch_cash(self) -> dict[str, Any]: ...
+    def fetch_price(self, symbol: str) -> tuple[float, dict[str, Any]]: ...
 
 
 # ---------- 한국투자증권(KIS) 어댑터 ----------
@@ -109,7 +120,7 @@ class KisBrokerAdapter(BrokerAdapter):
         cano: str,             # 계좌 앞 8자리
         acnt_prdt_cd: str,     # 계좌 뒤 2자리(예: '01')
         use_paper: bool = False,
-        overseas_conf: Optional[Dict[str, Any]] = None,
+        overseas_conf: Optional[dict[str, Any]] = None,
     ) -> None:
         self.app_key = app_key
         self.app_secret = app_secret
@@ -137,11 +148,11 @@ class KisBrokerAdapter(BrokerAdapter):
             else self._place_order_overseas(sym, market, req.side, req.qty, req.price)
         )
 
-    def cancel_order(self, order_id: str, *, market: Optional[str] = None) -> Dict[str, Any]:
+    def cancel_order(self, order_id: str, *, market: Optional[str] = None) -> dict[str, Any]:
         # 시장/시간대별 TR_ID 상이 → 운영 설정 후 구현
         raise NotImplementedError("취소/정정: 시장별 TR_ID 설정 후 구현하세요.")
 
-    def fetch_positions(self) -> Dict[str, Any]:
+    def fetch_positions(self) -> dict[str, Any]:
         self._ensure_token()
         params = {
             "CANO": self.cano,
@@ -159,7 +170,7 @@ class KisBrokerAdapter(BrokerAdapter):
         headers = self._headers(self.TR_BALANCE, need_auth=True)
         return self._request_json("GET", self.KRX_BALANCE_PATH, headers, params=params)
 
-    def fetch_cash(self) -> Dict[str, Any]:
+    def fetch_cash(self) -> dict[str, Any]:
         # 규격상 특정 종목 단가 입력 필요 → 주문 직전 대상 종목으로 재호출 권장
         self._ensure_token()
         params = {
@@ -174,7 +185,7 @@ class KisBrokerAdapter(BrokerAdapter):
         headers = self._headers(self.TR_PSBL, need_auth=True)
         return self._request_json("GET", self.KRX_PSBL_ORDER_PATH, headers, params=params)
 
-    def fetch_price(self, symbol: str) -> Tuple[float, Dict[str, Any]]:
+    def fetch_price(self, symbol: str) -> tuple[float, dict[str, Any]]:
         is_domestic, sym, market = self._parse_symbol(symbol, None)
         if not is_domestic:
             return self._fetch_price_overseas(sym, market)
@@ -184,6 +195,18 @@ class KisBrokerAdapter(BrokerAdapter):
         data = self._request_json("GET", self.KRX_PRICE_PATH, headers, params=params)
         price = float(data["output"]["stck_prpr"])
         return price, data
+
+    # ----- 오류 매핑 -----
+    @staticmethod
+    def _normalize_order_error(raw: dict, req: dict) -> BrokerError:
+        """KIS 응답(raw)에서 표준 오류로 변환. 잔고/예수금 부족은 code='INSUFFICIENT_CASH'."""
+        msg_cd = str(raw.get("msg_cd") or raw.get("rt_cd") or "")
+        msg1 = str(raw.get("msg1") or raw.get("msg") or "")
+        outmsg = msg1 or msg_cd or "order rejected"
+        text = f"{msg_cd} {msg1}".upper()
+        insufficient_patterns = ("잔고부족", "예수금부족", "주문가능금액 부족", "부족", "INSUFFICIENT", "NOT ENOUGH CASH", "INSUFFICIENT FUNDS")
+        code = "INSUFFICIENT_CASH" if any(pat in text or pat in outmsg for pat in insufficient_patterns) else "REJECTED"
+        return BrokerError(outmsg.strip(), code=code, raw=raw, req=req)
 
     # ----- 국내 -----
 
@@ -202,8 +225,13 @@ class KisBrokerAdapter(BrokerAdapter):
         tr = self._pick_tr(self.TR_BUY_CASH if side == "buy" else self.TR_SELL_CASH)
         headers = self._headers(tr, need_auth=True, with_hashkey=payload)
         raw = self._request_json("POST", self.KRX_ORDER_CASH_PATH, headers, data=payload)
+        # 성공/실패 판정: KIS는 HTTP 200에서도 rt_cd/msg_cd로 거절을 표기
+        req_echo = {"side": side, "pdno": pdno, "qty": int(qty), "price": price}
+        rt = str(raw.get("rt_cd", "0"))
+        if rt not in ("0", "OPERATION", "SUCCESS"):
+            raise self._normalize_order_error(raw, req_echo)
         oid = raw.get("output", {}).get("ORD_NO") or raw.get("output", {}).get("ODNO")
-        return OrderResult(ok=True, order_id=oid, raw=raw)
+        return OrderResult(ok=True, order_id=oid, raw=raw, request=req_echo)
 
     # ----- 해외 -----
 
@@ -242,10 +270,14 @@ class KisBrokerAdapter(BrokerAdapter):
         }
         headers = self._headers(tr_id, need_auth=True, with_hashkey=payload)
         raw = self._request_json("POST", order_path, headers, data=payload)
+        req_echo = {"pdno": pdno, "market": market, "side": side, "qty": int(qty), "price": use_price}
+        rt = str(raw.get("rt_cd", "0"))
+        if rt not in ("0", "OPERATION", "SUCCESS"):
+            raise self._normalize_order_error(raw, req_echo)
         oid = raw.get("output", {}).get("ODNO") or raw.get("output", {}).get("ORD_NO")
-        return OrderResult(ok=True, order_id=oid, raw=raw)
+        return OrderResult(ok=True, order_id=oid, raw=raw, request=req_echo)
 
-    def _fetch_price_overseas(self, pdno: str, market: Optional[str]) -> Tuple[float, Dict[str, Any]]:
+    def _fetch_price_overseas(self, pdno: str, market: Optional[str]) -> tuple[float, dict[str, Any]]:
         """해외 현재가: /uapi/overseas-price/v1/quotations/price (EXCD/SYMB 사용)."""
         if market is None:
             raise BrokerError("해외 시세는 market 코드가 필요합니다.")
@@ -272,10 +304,10 @@ class KisBrokerAdapter(BrokerAdapter):
 
     # ----- 내부 유틸 -----
 
-    def _pick_tr(self, pair: Tuple[str, str]) -> str:
+    def _pick_tr(self, pair: tuple[str, str]) -> str:
         return pair[1] if self.use_paper else pair[0]
 
-    def _parse_symbol(self, symbol: str, market_hint: Optional[str]) -> Tuple[bool, str, Optional[str]]:
+    def _parse_symbol(self, symbol: str, market_hint: Optional[str]) -> tuple[bool, str, Optional[str]]:
         """'KRX:005930' → (True,'005930',None), 'NASD:AAPL' → (False,'AAPL','NASD')."""
         if ":" not in symbol:
             return True, symbol, None
@@ -296,7 +328,7 @@ class KisBrokerAdapter(BrokerAdapter):
         except (TypeError, ValueError):
             return None
 
-    def _headers(self, tr_id: str, *, need_auth: bool, with_hashkey: Optional[dict] = None) -> Dict[str, str]:
+    def _headers(self, tr_id: str, *, need_auth: bool, with_hashkey: Optional[dict] = None) -> dict[str, str]:
         h = {
             "Content-Type": "application/json",
             "appkey": self.app_key,
@@ -339,17 +371,17 @@ class KisBrokerAdapter(BrokerAdapter):
         self,
         method: str,
         path: str,
-        headers: Dict[str, str],
+        headers: dict[str, str],
         *,
-        params: Optional[Dict[str, Any]] = None,
-        data: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        params: Optional[dict[str, Any]] = None,
+        data: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
         url = self.base + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         return self._http_json(method, url, headers=headers, data=data)
 
-    def _http_json(self, method: str, url: str, headers: Dict[str, str], data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _http_json(self, method: str, url: str, headers: dict[str, str], data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         req = urllib.request.Request(url=url, method=method, headers=headers)
         if data is not None:
             req.data = json.dumps(data).encode("utf-8")

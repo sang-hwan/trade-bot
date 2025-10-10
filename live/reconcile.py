@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Callable, Iterable, Mapping, Optional
 from datetime import datetime, timezone
 import math
 
@@ -20,11 +20,11 @@ _ALLOWED_REASON = {"signal", "stop", "rebalance"}
 
 @dataclass(slots=True)
 class ReconcileOutputs:
-    trades: List[Dict[str, object]]
-    positions: Dict[str, float]
-    cash: Dict[str, float]
-    unmatched_orders: List[Dict[str, object]]
-    unmatched_fills: List[Dict[str, object]]
+    trades: list[dict[str, object]]
+    positions: dict[str, float]
+    cash: dict[str, float]
+    unmatched_orders: list[dict[str, object]]
+    unmatched_fills: list[dict[str, object]]
 
 
 # ---------- 내부 유틸 ----------
@@ -44,15 +44,15 @@ def _norm_reason(maybe: Optional[str], fallback: str) -> str:
 
 
 def _match(
-    intended: List[Dict[str, object]],
-    fills: List[Dict[str, object]],
+    intended: list[dict[str, object]],
+    fills: list[dict[str, object]],
     *,
     qty_tol: float,
     price_tol: float,
-) -> Tuple[
-    List[Tuple[Dict[str, object], List[Dict[str, object]]]],
-    List[Dict[str, object]],
-    List[Dict[str, object]],
+) -> tuple[
+    list[tuple[dict[str, object], list[dict[str, object]]]],
+    list[dict[str, object]],
+    list[dict[str, object]],
 ]:
     """
     (symbol, side) 단위로 수량 매칭.
@@ -60,7 +60,7 @@ def _match(
     - intended에 지정가(price)가 있고 price_tol>0이면 가중평균 체결가와의 차이를 기록.
     """
     # intended를 (symbol, side) 하나로 집계(라우터가 병합했더라도 방어적 누적)
-    by_key_int: Dict[Tuple[str, str], Dict[str, object]] = {}
+    by_key_int: dict[tuple[str, str], dict[str, object]] = {}
     for o in intended:
         k = (str(o["symbol"]), str(o["side"]).lower())
         if k in by_key_int:
@@ -69,14 +69,14 @@ def _match(
             by_key_int[k] = dict(o)
 
     # fills를 그룹화
-    by_key_fill: Dict[Tuple[str, str], List[Dict[str, object]]] = {}
+    by_key_fill: dict[tuple[str, str], list[dict[str, object]]] = {}
     for f in fills:
         k = (str(f["symbol"]), str(f["side"]).lower())
         by_key_fill.setdefault(k, []).append(f)
 
-    matched: List[Tuple[Dict[str, object], List[Dict[str, object]]]] = []
-    unmatched_orders: List[Dict[str, object]] = []
-    unmatched_fills: List[Dict[str, object]] = []
+    matched: list[tuple[dict[str, object], list[dict[str, object]]]] = []
+    unmatched_orders: list[dict[str, object]] = []
+    unmatched_fills: list[dict[str, object]] = []
 
     for k, o in by_key_int.items():
         fills_k = by_key_fill.pop(k, [])
@@ -130,7 +130,7 @@ def reconcile(
     starting_positions: Mapping[str, float],
     starting_cash: Mapping[str, float],
     base_currency: str,
-    fee_fn: Optional[Callable[[float, str, str], Tuple[float, float]]] = None,
+    fee_fn: Optional[Callable[[float, str, str], tuple[float, float]]] = None,
     qty_tol: float = 1e-9,
     price_tol: float = 0.0,
 ) -> ReconcileOutputs:
@@ -143,8 +143,8 @@ def reconcile(
     fee_fn = fee_fn or (lambda notional, side, symbol: (0.0, 0.0))
 
     # 입력 정규화 & 필수 키 검사
-    intended_list: List[Dict[str, object]] = [dict(x) for x in intended_orders]
-    fills_list: List[Dict[str, object]] = [dict(x) for x in fills]
+    intended_list: list[dict[str, object]] = [dict(x) for x in intended_orders]
+    fills_list: list[dict[str, object]] = [dict(x) for x in fills]
 
     for o in intended_list:
         for k in ("symbol", "side", "qty"):
@@ -161,18 +161,30 @@ def reconcile(
     )
 
     # 회계 초기화
-    positions: Dict[str, float] = {str(k): float(v) for k, v in starting_positions.items()}
-    cash: Dict[str, float] = {str(k): float(v) for k, v in starting_cash.items()}
+    positions: dict[str, float] = {str(k): float(v) for k, v in starting_positions.items()}
+    cash: dict[str, float] = {str(k): float(v) for k, v in starting_cash.items()}
     if base_currency not in cash:
         cash[base_currency] = 0.0
 
-    trades: List[Dict[str, object]] = []
+    cash_start = float(cash.get(base_currency, 0.0))
+    proceeds_realized = 0.0
+    cash_used_for_buys = 0.0
+
+    trades: list[dict[str, object]] = []
 
     # 체결 반영(수수료/세금 포함)
     for order, fills_k in matched:
         sym = str(order["symbol"])
         side = str(order["side"]).lower()
         reason = _norm_reason(order.get("reason"), "rebalance")
+
+        # 주문 대비 실현 요약
+        requested_qty = _as_float(order.get("qty", 0.0))
+        funded_qty = sum(_as_float(f.get("qty", 0.0)) for f in fills_k)
+        rejected_reason = ""
+        if funded_qty + max(qty_tol, 0.0) < requested_qty:
+            # 부분/무체결. 상위에서 내려온 사유가 있으면 사용
+            rejected_reason = str(order.get("rejected_reason") or order.get("reject_reason") or order.get("error_code") or "")
 
         for f in fills_k:
             qty = _as_float(f["qty"])
@@ -186,10 +198,14 @@ def reconcile(
 
             if side == "buy":
                 positions[sym] = positions.get(sym, 0.0) + qty
-                cash[base_currency] = cash.get(base_currency, 0.0) - notional - commission_total - tax
+                cash_delta = -(notional + commission_total + tax)
+                cash[base_currency] = cash.get(base_currency, 0.0) + cash_delta
+                cash_used_for_buys += -cash_delta
             elif side == "sell":
                 positions[sym] = positions.get(sym, 0.0) - qty
-                cash[base_currency] = cash.get(base_currency, 0.0) + notional - commission_total - tax
+                cash_delta = (notional - commission_total - tax)
+                cash[base_currency] = cash.get(base_currency, 0.0) + cash_delta
+                proceeds_realized += cash_delta
             else:
                 raise ValueError("side must be 'buy' or 'sell'")
 
@@ -202,7 +218,33 @@ def reconcile(
                 "commission": commission_total,
                 "tax": tax,
                 "reason": _norm_reason(f.get("reason"), reason),
+                "requested_qty": requested_qty,
+                "funded_qty": funded_qty,
+                "rejected_reason": rejected_reason,
             })
+
+    cash_end = float(cash.get(base_currency, 0.0))
+    cash["cash_start"] = cash_start
+    cash["proceeds_realized"] = proceeds_realized
+    cash["cash_used_for_buys"] = cash_used_for_buys
+    cash["cash_end"] = cash_end
+    cash["unspent_cash"] = cash_end
+
+    # unmatched 주문에도 요약 필드 보조(있으면)
+    for u in unmatched_orders:
+        # 항목 단위로 안전 처리(수치 변환 불가 시 0으로 간주)
+        try:
+            rq = _as_float(u.get("qty", 0.0))
+        except (TypeError, ValueError):
+            rq = 0.0
+        try:
+            unfilled = _as_float(u.get("qty_unfilled", rq))
+        except (TypeError, ValueError):
+            unfilled = 0.0
+        u["requested_qty"] = rq
+        u["funded_qty"] = max(rq - unfilled, 0.0)
+        if (not u.get("rejected_reason")) and (unfilled > 0.0):
+            u["rejected_reason"] = "UNFILLED"
 
     return ReconcileOutputs(
         trades=trades,

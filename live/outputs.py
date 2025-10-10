@@ -9,11 +9,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 from datetime import datetime, timezone
 import csv
 import json
 import os
+import math
 
 # 시뮬레이션 모듈 재사용(가능 시), 불가 시 로컬 계산으로 대체.
 try:
@@ -42,22 +43,22 @@ def _ensure_ts(x: str) -> str:
     return str(x).strip()
 
 
-def _sorted_by_ts(rows: List[dict]) -> List[dict]:
+def _sorted_by_ts(rows: list[dict]) -> list[dict]:
     return sorted(rows, key=lambda r: r.get("ts") or r.get("ts_utc") or "")
 
 
 # ---------- 정규화 빌더 ----------
 
-def make_trades(trades: Iterable[Mapping[str, object]]) -> List[dict]:
+def make_trades(trades: Iterable[Mapping[str, object]]) -> list[dict]:
     """
     trades 정규화:
-    - 최소 키: ts, symbol, side, qty, price, commission, reason
+    - 필수 키: ts, symbol, side, qty, price, commission, reason
     - 정렬: ts 오름차순
     """
     if _sim_make_trades_df is not None:
         df = _sim_make_trades_df(trades)  # pandas.DataFrame(ts 오름차순)
-        out = df.to_dict(orient="records")
-        norm: List[dict] = []
+        out = df.to_dict(orient="records")  # type: ignore[attr-defined]
+        norm: list[dict] = []
         for d in out:
             d = dict(d)
             d["ts"] = _ensure_ts(d.get("ts") or d.get("ts_utc", ""))
@@ -76,7 +77,7 @@ def make_trades(trades: Iterable[Mapping[str, object]]) -> List[dict]:
         return _sorted_by_ts(norm)
 
     # 로컬 fallback
-    out: List[dict] = []
+    out: list[dict] = []
     for r in trades:
         d = dict(r)
         d["ts"] = _ensure_ts(d.get("ts") or d.get("ts_utc", ""))
@@ -90,7 +91,7 @@ def make_trades(trades: Iterable[Mapping[str, object]]) -> List[dict]:
     return _sorted_by_ts(out)
 
 
-def make_equity_curve(points: Iterable[Mapping[str, object]]) -> List[dict]:
+def make_equity_curve(points: Iterable[Mapping[str, object]]) -> list[dict]:
     """
     equity_curve 정규화:
     - 원소: {"ts": "...Z", "equity": float}
@@ -103,37 +104,70 @@ def make_equity_curve(points: Iterable[Mapping[str, object]]) -> List[dict]:
         ec_reset = ec.reset_index()
         return _sorted_by_ts([
             {"ts": _ensure_ts(str(ts)), "equity": _as_float(eq)}
-            for ts, eq in zip(ec_reset["ts"], ec_reset["equity"])
+            for ts, eq in zip(ec_reset["ts"], ec_reset["equity"])  # type: ignore[index]
         ])
 
     # 로컬 fallback
-    out: List[dict] = []
+    out: list[dict] = []
     for p in points:
-        ts = _ensure_ts(p.get("ts", ""))
-        eq = _as_float(p["equity"])
+        ts = _ensure_ts(p.get("ts", ""))  # type: ignore[arg-type]
+        eq = _as_float(p["equity"])        # type: ignore[index]
         out.append({"ts": ts, "equity": eq})
     return _sorted_by_ts(out)
 
 
-def compute_metrics(equity_curve: List[Mapping[str, object]], trades: List[Mapping[str, object]]) -> Dict[str, object]:
+def compute_metrics(equity_curve: list[Mapping[str, object]], trades: list[Mapping[str, object]]) -> dict[str, object]:
     """기본 지표 계산: 시뮬레이션 모듈 우선, 불가 시 로컬 계산."""
+    # 시뮬레이션 경로(우선)
     if _sim_compute_metrics is not None and _sim_make_equity_curve_df is not None and _sim_make_trades_df is not None:
-        ec_df = _sim_make_equity_curve_df(equity_curve)
-        initial_equity = float(ec_df["equity"].iloc[0]) if (getattr(ec_df, "empty", True) is False) else 0.0
-        trades_df = _sim_make_trades_df(trades)
-        sim_m = _sim_compute_metrics(ec_df, initial_equity=initial_equity, trades_df=trades_df)
-        final_equity = float(ec_df["equity"].iloc[-1]) if (getattr(ec_df, "empty", True) is False) else 0.0
+        ec_df = _sim_make_equity_curve_df(equity_curve)  # type: ignore[misc]
+
+        # 빈 equity_curve → 안전 반환
+        if getattr(ec_df, "empty", True):
+            return {
+                "initial_equity": 0.0,
+                "final_equity": 0.0,
+                "total_return": 0.0,
+                "mdd": 0.0,
+                "mdd_start_ts": None,
+                "mdd_end_ts": None,
+                "trade_count": len(trades),
+                "win_rate": None,
+                "payoff": None,
+                "profit_factor": None,
+            }
+
+        initial_equity = float(ec_df["equity"].iloc[0])  # type: ignore[index]
+        final_equity = float(ec_df["equity"].iloc[-1])   # type: ignore[index]
+
+        # 초기자본 0/음수/NaN → 0으로 안전 처리(0으로 나누기 방지)
+        if initial_equity <= 0.0 or math.isnan(initial_equity):
+            return {
+                "initial_equity": initial_equity,
+                "final_equity": final_equity,
+                "total_return": 0.0,
+                "mdd": 0.0,
+                "mdd_start_ts": None,
+                "mdd_end_ts": None,
+                "trade_count": len(trades),
+                "win_rate": None,
+                "payoff": None,
+                "profit_factor": None,
+            }
+
+        trades_df = _sim_make_trades_df(trades)  # type: ignore[misc]
+        sim_m = _sim_compute_metrics(ec_df, initial_equity=initial_equity, trades_df=trades_df)  # type: ignore[misc]
         return {
             "initial_equity": initial_equity,
             "final_equity": final_equity,
-            "total_return": float(sim_m.get("total_return", 0.0)),
-            "mdd": float(sim_m.get("mdd", 0.0)),
+            "total_return": float(sim_m.get("total_return", 0.0)),   # type: ignore[call-arg]
+            "mdd": float(sim_m.get("mdd", 0.0)),                     # type: ignore[call-arg]
             "mdd_start_ts": None,
             "mdd_end_ts": None,
-            "trade_count": int(sim_m.get("trades", 0)),
-            "win_rate": sim_m.get("win_rate"),
-            "payoff": sim_m.get("payoff"),
-            "profit_factor": sim_m.get("profit_factor"),
+            "trade_count": int(sim_m.get("trades", 0)),             # type: ignore[call-arg]
+            "win_rate": sim_m.get("win_rate"),                      # type: ignore[call-arg]
+            "payoff": sim_m.get("payoff"),                          # type: ignore[call-arg]
+            "profit_factor": sim_m.get("profit_factor"),            # type: ignore[call-arg]
         }
 
     # 로컬 fallback
@@ -200,10 +234,11 @@ def build_run_meta(
     plan: Optional[Mapping[str, Any]] = None,
     broker_conf: Optional[Mapping[str, Any]] = None,
     run_type: Optional[str] = None,  # 과거 호환
-) -> Dict[str, Any]:
+    policy: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
     """실행 메타 생성(호출부 시그니처와 정합)."""
     run_mode = mode or run_type or "live"
-    return {
+    meta: dict[str, Any] = {
         "schema_version": "1.0",
         "mode": run_mode,
         "base_currency": base_currency,
@@ -212,14 +247,20 @@ def build_run_meta(
         "broker_conf": dict(broker_conf or {}),
         "created_utc": _utc_now_iso(),
     }
+    if policy:
+        meta["policy"] = dict(policy)
+        for k in ("two_stage", "alloc_mode", "reserve_pct", "downsize_retries", "price_cushion_pct", "fee_cushion_pct"):
+            if k in policy:
+                meta[k] = policy[k]
+    return meta
 
 
 # ---------- 파일 기록 ----------
 
-def _write_csv(path: str, rows: List[Mapping[str, object]]) -> None:
+def _write_csv(path: str, rows: list[Mapping[str, object]]) -> None:
     # 헤더: 필수 키 우선 + 합집합
     preferred = ["ts", "symbol", "side", "qty", "price", "commission", "tax", "reason", "equity"]
-    keys: List[str] = list(preferred)
+    keys: list[str] = list(preferred)
     seen = set(preferred)
     for r in rows or []:
         for k in r.keys():
@@ -247,13 +288,15 @@ def _write_jsonl(path: str, rows: Iterable[Mapping[str, object]]) -> None:
 def write_outputs(
     out_dir: str,
     *,
-    trades: List[Mapping[str, object]],
-    equity_curve: List[Mapping[str, object]],
+    trades: list[Mapping[str, object]],
+    equity_curve: list[Mapping[str, object]],
     metrics: Mapping[str, object],
     run_meta: Mapping[str, object],
     orders_log: Iterable[Mapping[str, object]] | None = None,
     fills_log: Iterable[Mapping[str, object]] | None = None,
-) -> Dict[str, str]:
+    rejected_orders: Iterable[Mapping[str, object]] | None = None,
+    cash_flow_summary: Mapping[str, object] | None = None,
+) -> dict[str, str]:
     """디스크 기록 후 경로 맵 반환."""
     os.makedirs(out_dir, exist_ok=True)
     paths = {
@@ -266,6 +309,14 @@ def write_outputs(
     _write_csv(paths["equity_curve_csv"], make_equity_curve(equity_curve))
     _write_json(paths["metrics_json"], dict(metrics))
     _write_json(paths["run_meta_json"], dict(run_meta))
+    if rejected_orders is not None:
+        p = os.path.join(out_dir, "rejected_orders.csv")
+        _write_csv(p, list(rejected_orders))
+        paths["rejected_orders_csv"] = p
+    if cash_flow_summary is not None:
+        p = os.path.join(out_dir, "cash_flow_summary.json")
+        _write_json(p, dict(cash_flow_summary))
+        paths["cash_flow_summary_json"] = p
     if orders_log is not None:
         p = os.path.join(out_dir, "orders.jsonl")
         _write_jsonl(p, orders_log)
@@ -289,25 +340,42 @@ def finalize_outputs(
     artifacts: Optional[Mapping[str, object]] = None,
     orders_log: Iterable[Mapping[str, object]] | None = None,
     fills_log: Iterable[Mapping[str, object]] | None = None,
-) -> Dict[str, object]:
+    rejected_orders: Iterable[Mapping[str, object]] | None = None,
+    cash_details: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     """
     산출물 패키징:
     - metrics 미제공 시 내부 계산
     - out_dir 제공 시 파일 기록 후 파일 경로를 artifacts에 병합
     - artifacts 인자가 있으면 보존(orders/fills 목록 등)
+    - rejected_orders/cash_details 전달 시 추가 산출물 기록
     """
     tlist = make_trades(trades)
     elist = make_equity_curve(equity_curve)
     mcalc = dict(metrics) if metrics is not None else compute_metrics(elist, tlist)
 
-    ret_artifacts: Dict[str, object] = {}
+    ret_artifacts: dict[str, object] = {}
     if artifacts:
         ret_artifacts.update(dict(artifacts))
 
     orders_src = ret_artifacts.get("orders") if "orders" in ret_artifacts else orders_log
     fills_src = ret_artifacts.get("fills") if "fills" in ret_artifacts else fills_log
+    rejected_src = ret_artifacts.get("rejected_orders") if (artifacts and "rejected_orders" in artifacts) else rejected_orders
 
-    file_paths: Dict[str, str] = {}
+    cash_flow_summary = None
+    if cash_details is not None:
+        cds = dict(cash_details)
+        denom = float(cds.get("cash_start", 0.0)) + float(cds.get("proceeds_realized", 0.0))
+        util = (float(cds.get("cash_used_for_buys", 0.0)) / denom) if denom > 0 else 0.0
+        cash_flow_summary = {
+            "cash_start": float(cds.get("cash_start", 0.0)),
+            "proceeds_realized": float(cds.get("proceeds_realized", 0.0)),
+            "cash_used_for_buys": float(cds.get("cash_used_for_buys", 0.0)),
+            "cash_end": float(cds.get("cash_end", cds.get("unspent_cash", 0.0))),
+            "cash_utilization": max(0.0, min(1.0, util)),
+        }
+
+    file_paths: dict[str, str] = {}
     if out_dir:
         file_paths = write_outputs(
             out_dir,
@@ -317,6 +385,8 @@ def finalize_outputs(
             run_meta=run_meta,
             orders_log=orders_src if isinstance(orders_src, Iterable) else None,
             fills_log=fills_src if isinstance(fills_src, Iterable) else None,
+            rejected_orders=rejected_src if isinstance(rejected_src, Iterable) else None,
+            cash_flow_summary=cash_flow_summary,
         )
         ret_artifacts.update(file_paths)
 

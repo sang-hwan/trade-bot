@@ -10,12 +10,27 @@ AUTO 계획 산출 모듈 (Python 3.11+)
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+
+from typing import Any
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime, timezone
+import os
+import json
+
+
+def _round_price_nearest(price: float, step: float) -> float:
+    """틱(step) 기준 최근접 반올림(동률=올림). step<=0이면 원값."""
+    step = float(step or 0.0)
+    if step <= 0.0 or price <= 0.0:
+        return float(price)
+    q = Decimal(str(step))
+    ticks = (Decimal(str(price)) / q).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return float((ticks * q).quantize(q, rounding=ROUND_HALF_UP))
 
 
 def build_plan_auto(
-    cfg: Dict[str, Any], *, source: str, interval: str
-) -> Tuple[List[str], Dict[str, int], Dict[str, Dict[str, float]]]:
+    cfg: dict[str, Any], *, source: str, interval: str
+) -> tuple[list[str], dict[str, int], dict[str, dict[str, float]]]:
     """
     D-1 종가(UTC)까지의 데이터로 당일(D) 시가 집행 계획을 산출.
     반환:
@@ -33,7 +48,7 @@ def build_plan_auto(
     from simulation.sizing_on_open import size_from_spec
     import datetime as dt
 
-    LOOKBACK_YEARS = 10  # 과거 참조 길이(연)
+    LOOKBACK_YEARS = 10
 
     base_ccy = cfg.get("base_currency", "USD")
     cal_id = cfg.get("calendar_id", "XNAS")
@@ -47,16 +62,24 @@ def build_plan_auto(
     initial_cash = float(cfg.get("initial_cash", 10_000.0))
     assets = cfg.get("assets", [])
 
+    # 주석 필드 계산 파라미터
+    price_step = float(cfg.get("price_step", 0.0))
+    price_cushion_pct = 0.001
+    fee_cushion_pct = 0.0005
+
     today_utc = dt.datetime.utcnow().date()
     end = today_utc - dt.timedelta(days=1)  # D-1
     start = end - dt.timedelta(days=365 * LOOKBACK_YEARS)
 
-    stops_list: List[str] = []
-    signals_map: Dict[str, int] = {}
-    rebal_spec: Dict[str, Dict[str, float]] = {"buy_notional": {}, "sell_notional": {}}
+    stops_list: list[str] = []
+    signals_map: dict[str, int] = {}
+    rebal_spec: dict[str, dict[str, float]] = {"buy_notional": {}, "sell_notional": {}}
+
+    # 감사용 주석(매수 후보)
+    audit_signals: list[dict[str, Any]] = []
 
     for a in assets:
-        symbol = a["symbol"]                  # 예: "NASD:TNDM"
+        symbol = a["symbol"]                  # 예: "NASD:AAPL"
         y_ticker = symbol.split(":")[-1]      # Yahoo 심볼
 
         # 1) 수집 → 검증 → 조정
@@ -73,6 +96,13 @@ def build_plan_auto(
         df = adj(cr.dataframe)
         if df.empty:
             signals_map[symbol] = 0
+            audit_signals.append({
+                "symbol": symbol,
+                "requested_qty": 0,
+                "price_est": 0.0,
+                "cash_need": 0.0,
+                "will_enter": False,
+            })
             continue
 
         last_ts = df.index.max()
@@ -93,9 +123,10 @@ def build_plan_auto(
         # 4) 수량 산정 (Fixed Fractional) — D 오픈가 미상 → D-1 종가 프록시
         spec = build_fixed_fractional_spec(df, N=N, f=f, lot_step=lot_step)
         stop_level = float(spec.loc[last_ts, "stop_level"])
-        entry_proxy = float(
+        last_close = float(
             df.loc[last_ts, "close_adj"] if "close_adj" in df.columns else df.loc[last_ts, "close"]
         )
+        entry_proxy = last_close
         sz = size_from_spec(
             entry_price=entry_proxy,
             equity=initial_cash,
@@ -107,5 +138,44 @@ def build_plan_auto(
         )
         q_exec = int(sz.get("Q_exec", 0))
         signals_map[symbol] = q_exec if will_enter else 0
+
+        # --- 매수 후보 주석 필드 ---
+        price_est = _round_price_nearest(last_close * (1.0 + price_cushion_pct), price_step)
+        cash_need = price_est * float(q_exec) * (1.0 + fee_cushion_pct)
+        audit_signals.append({
+            "symbol": symbol,
+            "requested_qty": q_exec,
+            "price_est": price_est,
+            "cash_need": cash_need,
+            "will_enter": bool(will_enter),
+        })
+
+    # 매도 원천 고정: 계획 단계에서 임의 현금 마련 매도 생성 금지
+    assert set(rebal_spec.keys()) == {"buy_notional", "sell_notional"}
+
+    # 감사 플랜 저장: plan/plan.json
+    try:
+        plan_dir = "plan"
+        os.makedirs(plan_dir, exist_ok=True)
+        plan_doc = {
+            "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "base_currency": base_ccy,
+            "summary": {
+                "stops_count": len(stops_list),
+                "signals_count": len(signals_map),
+                "rebal_has_targets": bool(rebal_spec.get("buy_notional") or rebal_spec.get("sell_notional")),
+            },
+            "stops": list(stops_list),
+            "signals": audit_signals,
+            "rebal_summary": {
+                "buy_notional": rebal_spec.get("buy_notional", {}),
+                "sell_notional": rebal_spec.get("sell_notional", {}),
+            },
+        }
+        with open(os.path.join(plan_dir, "plan.json"), "w", encoding="utf-8") as f:
+            json.dump(plan_doc, f, ensure_ascii=False, indent=2)
+    except (OSError, TypeError, ValueError):
+        # 계획 저장 실패는 비치명
+        pass
 
     return stops_list, signals_map, rebal_spec

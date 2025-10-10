@@ -1,0 +1,30 @@
+{
+  "generated_utc": "2025-10-10T05:44:42Z",
+  "base_currency": "USD",
+  "summary": {
+    "stops_count": 0,
+    "signals_count": 2,
+    "rebal_has_targets": false
+  },
+  "stops": [],
+  "signals": [
+    {
+      "symbol": "NASD:TNDM",
+      "requested_qty": 59,
+      "price_est": 14.83,
+      "cash_need": 875.407485,
+      "will_enter": true
+    },
+    {
+      "symbol": "NASD:CWCO",
+      "requested_qty": 210,
+      "price_est": 33.49,
+      "cash_need": 7036.41645,
+      "will_enter": true
+    }
+  ],
+  "rebal_summary": {
+    "buy_notional": {},
+    "sell_notional": {}
+  }
+}

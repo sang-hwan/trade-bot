@@ -95,7 +95,7 @@ def run(artifacts: Artifacts) -> GateResult:
     # 1) 스냅샷 로드 & 기준 컬럼
     try:
         df = pd.read_parquet(artifacts.snapshot_parquet_path)
-    except Exception as e:  # 엔진별 예외 다양 → 즉시 실패
+    except (FileNotFoundError, OSError, ValueError, ImportError) as e:
         return GateResult(passed=False, errors=[f"[parquet:read] 스냅샷 로드 실패: {e}"], warnings=[], evidence={})
     df = _ensure_utc_index(df)
     open_col = _pick_col(df, "open")
@@ -127,8 +127,19 @@ def run(artifacts: Artifacts) -> GateResult:
     trades["ts"] = pd.to_datetime(trades["ts"], utc=True)
     trades.sort_values(["ts"], kind="stable", inplace=True)
     trades.reset_index(drop=True, inplace=True)
+    
+    # 5) 매도 원천 검증: sell은 'stop' 또는 'rebalance'만 허용
+    if "reason" not in trades.columns:
+        errors.append("[trades:schema] 'reason' 컬럼이 필요합니다.")
+    else:
+        sells = trades[trades["side"].astype(str).str.lower() == "sell"]
+        bad_sell_reasons = set(sells["reason"].dropna().astype(str).str.lower().unique()) - {"stop", "rebalance"}
+        if bad_sell_reasons:
+            errors.append(
+                "[trades:sell_origin] 매도 reason은 'stop'/'rebalance'만 허용 — 위반: " + str(sorted(bad_sell_reasons))
+            )
 
-    # 5) 가격·수량 라운딩 및 체결가 정의 검증
+    # 6) 가격·수량 라운딩 및 체결가 정의 검증
     price_mismatch: List[str] = []
     qty_mismatch: List[str] = []
     comm_mismatch: List[str] = []
@@ -176,7 +187,7 @@ def run(artifacts: Artifacts) -> GateResult:
     if comm_mismatch:
         errors.append("[commission] 수수료 계산 불일치:\n  - " + "\n  - ".join(comm_mismatch[:20]))
 
-    # 6) 일/일 회계 등식 + equity_curve 정합성
+    # 7) 일/일 회계 등식 + equity_curve 정합성
     eq = []
     cash = float(initial_equity)
     pos = 0.0
@@ -233,8 +244,19 @@ def run(artifacts: Artifacts) -> GateResult:
         if math.isfinite(mdd_report) and not _aeq(mdd_calc, mdd_report, atol=1e-12):
             errors.append(f"[metrics:mdd] expected={mdd_calc} got={mdd_report}")
 
-    evidence.update(
-        {
+    # 8) 정책 메타 확인: two_stage==true 및 필드 존재
+    policy = artifacts.run_meta.get("policy", {}) if isinstance(artifacts.run_meta, dict) else {}
+    two_stage = artifacts.run_meta.get("two_stage", policy.get("two_stage")) if isinstance(artifacts.run_meta, dict) else None
+    if two_stage is not True:
+        errors.append("[run_meta:two_stage] two_stage must be true for two-stage execution.")
+    required_policy = {"alloc_mode", "reserve_pct", "downsize_retries", "price_cushion_pct", "fee_cushion_pct"}
+    missing_policy = sorted([k for k in required_policy if (k not in policy and k not in artifacts.run_meta)])
+    if missing_policy:
+        errors.append("[run_meta:policy] missing keys: " + str(missing_policy))
+
+    evidence.update({
+            "policy_two_stage": bool(two_stage is True),
+            "policy_missing": missing_policy,
             "open_col_used": open_col,
             "close_col_used": close_col,
             "params": {

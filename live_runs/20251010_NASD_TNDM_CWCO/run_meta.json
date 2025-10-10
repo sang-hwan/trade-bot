@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "mode": "live",
+  "base_currency": "USD",
+  "open_ts_utc": "2025-10-10T05:44:40Z",
+  "plan": {
+    "stops_count": 0,
+    "signals_count": 2,
+    "rebal_has_targets": false
+  },
+  "broker_conf": {
+    "use_paper": false
+  },
+  "created_utc": "2025-10-10T05:44:58Z",
+  "two_stage": true,
+  "reserve_pct": 0.01,
+  "alloc_mode": "proportional",
+  "downsize_retries": 2,
+  "price_cushion_pct": 0.001,
+  "fee_cushion_pct": 0.0005,
+  "initial_equity": 0.0
+}

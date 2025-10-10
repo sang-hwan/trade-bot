@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 
-# ── 표준 라이브러리 우선
 from collections.abc import Iterable, Mapping
 from dataclasses import is_dataclass
 from typing import Any
+import math
 
-# ── 서드파티
 import pandas as pd
 
 __all__ = [
@@ -112,6 +111,16 @@ def compute_metrics(
         mdd = 0.0
     else:
         last = float(equity_curve["equity"].iloc[-1])
+
+        # 초기자본 0/누락 방어(0-division 예방)
+        if initial_equity is None or initial_equity <= 0.0 or math.isnan(float(initial_equity)):
+            trade_stats = _trade_stats(trades_df if trades_df is not None else pd.DataFrame())
+            return {
+                "total_return": 0.0,
+                "mdd": 0.0,
+                **trade_stats,
+            }
+
         total_return = (last / float(initial_equity)) - 1.0
         mdd = _mdd(equity_curve["equity"].astype(float))
 
@@ -147,7 +156,7 @@ def build_run_meta(
     - params: 엔진 입력(f, N, lot_step, price_step, commission_rate, slip, V, PV, initial_equity 등)
     - price_columns_used: {"open": "open_adj|open", "close": "close_adj|close"}
     - snapshot_meta: 기준 통화/해시/캘린더/FX 시점 등 핵심 필드 포함
-    - engine_mode: 'single-asset-long-only' 명시(기준 통화 환산은 데이터 단계에서 완료)
+    - engine_mode: 'single-asset-long-only' 명시
     """
     meta: dict[str, Any] = {
         **dict(params),
