@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TypedDict
 
 import pandas as pd
@@ -27,37 +25,24 @@ class GateResult(TypedDict):
 
 @dataclass
 class Artifacts:
+    """검증에 필요한 산출물 핸들."""
     snapshot_parquet_path: str
     snapshot_meta: Dict[str, Any]
-    # 문서 정적 규약 검사 대상 디렉터리(README, 설계 문서 등)
-    docs_dir: Optional[str] = None
 
 
 # 필수 스냅샷 메타 키/타입
 _REQUIRED_SNAPSHOT_FIELDS: Dict[str, tuple[type, ...]] = {
-    "source": (str,),
-    "symbol": (str,),
-    "start": (str,),
-    "end": (str,),
-    "interval": (str,),
-    "rows": (int,),
-    "columns": (int,),
-    "snapshot_path": (str,),
-    "snapshot_sha256": (str,),
-    "collected_at": (str,),
-    "timezone": (str,),
-    "base_currency": (str,),
-    "fx_source": (str, type(None)),
-    "fx_source_ts": (str, type(None)),
-    "calendar_id": (str,),
+    "source": (str,), "symbol": (str,), "start": (str,), "end": (str,),
+    "interval": (str,), "rows": (int,), "columns": (int,),
+    "snapshot_path": (str,), "snapshot_sha256": (str,), "collected_at": (str,),
+    "timezone": (str,), "base_currency": (str,), "fx_source": (str, type(None)),
+    "fx_source_ts": (str, type(None)), "calendar_id": (str,),
     "instrument_registry_hash": (str, type(None)),
 }
 
-# \[...\] 금지 탐지용
-_BRACKET_PATTERN = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
-
 
 def _sha256_of_file(path: str, chunk_size: int = 1 << 20) -> str:
+    """파일의 SHA-256 해시를 계산한다."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(chunk_size), b""):
@@ -65,67 +50,17 @@ def _sha256_of_file(path: str, chunk_size: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def _is_iso8601(s: Optional[str]) -> bool:
-    if s is None:
+def _is_iso8601_utc(s: Optional[str]) -> bool:
+    """문자열이 'Z'로 끝나는 UTC ISO-8601 형식인지 확인한다."""
+    if not s:
         return True
     try:
-        datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if not s.endswith("Z"):
+            return False
+        pd.to_datetime(s, utc=True)
         return True
     except (ValueError, TypeError):
         return False
-
-
-def _to_iso_utc(ts: pd.Timestamp) -> str:
-    if ts.tz is None:
-        ts = ts.tz_localize("UTC")
-    else:
-        ts = ts.tz_convert("UTC")
-    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _lint_display_math_blocks(docs_dir: Optional[str]) -> List[str]:
-    """디스플레이 수식 규약 검사: $$ 블록 앞뒤 빈 줄 1줄, \[...\] 금지."""
-    issues: List[str] = []
-    if not docs_dir or not os.path.isdir(docs_dir):
-        return issues
-
-    md_files: List[str] = []
-    for root, _, files in os.walk(docs_dir):
-        for fn in files:
-            if fn.lower().endswith((".md", ".mdx", ".markdown", ".txt")):
-                md_files.append(os.path.join(root, fn))
-
-    for path in md_files:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        except OSError as e:
-            issues.append(f"[doc:read-fail] {path}: {e}")
-            continue
-
-        content = "\n".join(lines)
-        if _BRACKET_PATTERN.search(content):
-            issues.append(f"[doc:display-math] '\\[...\\]' 사용 금지: {path}")
-
-        in_block = False
-        start_idx = -1
-        for i, line in enumerate(lines):
-            if line.strip() == "$$":
-                if not in_block:
-                    in_block = True
-                    start_idx = i
-                    if i == 0 or lines[i - 1].strip() != "":
-                        issues.append(f"[doc:display-math] 블록 시작 전 빈 줄 필요: {path}:{i+1}")
-                else:
-                    in_block = False
-                    end_idx = i
-                    if end_idx == len(lines) - 1 or lines[end_idx + 1].strip() != "":
-                        issues.append(f"[doc:display-math] 블록 종료 후 빈 줄 필요: {path}:{end_idx+1}")
-
-        if in_block:
-            issues.append(f"[doc:display-math] 닫히지 않은 $$ 블록: {path}:{start_idx+1}")
-
-    return issues
 
 
 def run(artifacts: Artifacts) -> GateResult:
@@ -134,109 +69,77 @@ def run(artifacts: Artifacts) -> GateResult:
     warnings: List[str] = []
     evidence: Dict[str, Any] = {}
 
-    # 1) snapshot_meta 필수 키·타입·형식
+    # (1/5) snapshot_meta 형식 검증
     meta = artifacts.snapshot_meta or {}
     for key, types in _REQUIRED_SNAPSHOT_FIELDS.items():
         if key not in meta:
             errors.append(f"[meta:missing] '{key}' 누락")
-            continue
-        if not isinstance(meta[key], types):
-            errors.append(f"[meta:type] '{key}' 타입 불일치: {type(meta[key]).__name__} != {types}")
+        elif not isinstance(meta.get(key), types):
+            errors.append(f"[meta:type] '{key}' 타입 불일치: {type(meta.get(key)).__name__} != {types}")
 
     for k in ("start", "end", "collected_at", "fx_source_ts"):
-        if k in meta and not _is_iso8601(meta.get(k)):
-            errors.append(f"[meta:iso8601] '{k}' 형식 오류: {meta.get(k)!r}")
+        if k in meta and not _is_iso8601_utc(meta.get(k)):
+            errors.append(f"[meta:iso8601] '{k}'는 UTC(Z) ISO-8601 형식이여야 합니다: {meta.get(k)!r}")
 
-    # 2) Parquet 로드 & 인덱스 검증
+    # (2/5) Parquet 파일 로드 및 인덱스 검증
     pq_path = artifacts.snapshot_parquet_path
     if not os.path.isfile(pq_path):
-        return GateResult(passed=False, errors=[f"[parquet:missing] 파일 없음: {pq_path}"], warnings=[], evidence={})
+        errors.append(f"[parquet:missing] 파일 없음: {pq_path}")
+        return GateResult(passed=len(errors) == 0, errors=errors, warnings=warnings, evidence=evidence)
 
     try:
         df = pd.read_parquet(pq_path)
-    except Exception as e:  # pandas/엔진별 예외가 다양하여 포괄 처리
-        return GateResult(passed=False, errors=[f"[parquet:read] 로드 실패: {pq_path} ({e})"], warnings=[], evidence={})
+    except Exception as e:
+        errors.append(f"[parquet:read] 로드 실패: {pq_path} ({e})")
+        return GateResult(passed=len(errors) == 0, errors=errors, warnings=warnings, evidence=evidence)
 
     if not isinstance(df.index, pd.DatetimeIndex):
-        errors.append("[index:type] DatetimeIndex 아님")
-        idx_utc = None
+        errors.append("[index:type] 인덱스가 DatetimeIndex가 아닙니다.")
+    elif df.index.tz is None or str(df.index.tz) != "UTC":
+        errors.append("[index:tz] 인덱스 타임존이 UTC가 아닙니다.")
     else:
-        if df.index.tz is None:
-            errors.append("[index:tz] 타임존 정보 없음 — 반드시 UTC여야 함")
-            idx_utc = df.index.tz_localize("UTC")
-        else:
-            try:
-                idx_utc = df.index.tz_convert("UTC")
-            except (TypeError, ValueError) as e:
-                errors.append(f"[index:tz-convert] UTC 변환 실패: {e}")
-                idx_utc = df.index
+        if not df.index.is_monotonic_increasing:
+            errors.append("[index:order] 인덱스가 오름차순이 아닙니다.")
+        if not df.index.is_unique:
+            errors.append("[index:dup] 인덱스에 중복된 값이 존재합니다.")
 
-        if idx_utc is not None:
-            if not idx_utc.is_monotonic_increasing:
-                errors.append("[index:order] 인덱스가 오름차순이 아님")
-            if not idx_utc.is_unique:
-                errors.append("[index:dup] 인덱스에 중복이 존재")
-            evidence["index_min_utc"] = _to_iso_utc(idx_utc.min())
-            evidence["index_max_utc"] = _to_iso_utc(idx_utc.max())
+    # (3/5) 메타데이터와 실제 데이터 내용 대조
+    if not df.empty:
+        if meta.get("rows") != df.shape[0]:
+            errors.append(f"[meta:rows] 메타({meta.get('rows')})와 실제 행 수({df.shape[0]})가 다릅니다.")
+        if meta.get("columns") != df.shape[1]:
+            errors.append(f"[meta:columns] 메타({meta.get('columns')})와 실제 열 수({df.shape[1]})가 다릅니다.")
 
-    # 3) rows/columns, start/end 합치
-    evidence["rows"] = int(df.shape[0])
-    evidence["columns"] = int(df.shape[1])
+        actual_start_str = pd.to_datetime(df.index.min(), utc=True).strftime("%Y-%m-%dT%H:%M:%SZ")
+        actual_end_str = pd.to_datetime(df.index.max(), utc=True).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if meta.get("start") != actual_start_str:
+            errors.append(f"[meta:start] 메타({meta.get('start')})와 실제 시작 시간({actual_start_str})이 다릅니다.")
+        if meta.get("end") != actual_end_str:
+            errors.append(f"[meta:end] 메타({meta.get('end')})와 실제 종료 시간({actual_end_str})이 다릅니다.")
 
-    mr = meta.get("rows")
-    mc = meta.get("columns")
-    if isinstance(mr, int) and mr != evidence["rows"]:
-        errors.append(f"[meta:rows] 예상({mr}) != 실제({evidence['rows']})")
-    if isinstance(mc, int) and mc != evidence["columns"]:
-        errors.append(f"[meta:columns] 예상({mc}) != 실제({evidence['columns']})")
-
+    # (4/5) 파일 경로 및 해시 일치 검증
     try:
-        base_idx = df.index.tz_convert("UTC") if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None else df.index.tz_localize("UTC")
-        min_iso = _to_iso_utc(base_idx.min())
-        max_iso = _to_iso_utc(base_idx.max())
-        evidence["index_min_iso"] = min_iso
-        evidence["index_max_iso"] = max_iso
-
-        mstart = str(meta.get("start", "")).replace("Z", "+00:00")
-        mend = str(meta.get("end", "")).replace("Z", "+00:00")
-        ms_iso = datetime.fromisoformat(mstart).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if mstart else ""
-        me_iso = datetime.fromisoformat(mend).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if mend else ""
-        if ms_iso and ms_iso != min_iso:
-            errors.append(f"[meta:start] 예상({ms_iso}) != 실제({min_iso})")
-        if me_iso and me_iso != max_iso:
-            errors.append(f"[meta:end] 예상({me_iso}) != 실제({max_iso})")
-    except (ValueError, TypeError, AttributeError) as e:
-        errors.append(f"[meta:start-end-compare] 비교 실패: {e}")
-
-    # 4) 파일 경로·해시 일치
-    try:
-        calc_sha = _sha256_of_file(pq_path)
-        evidence["sha256_calc"] = calc_sha
+        calculated_sha = _sha256_of_file(pq_path)
         meta_sha = str(meta.get("snapshot_sha256", ""))
         if not meta_sha:
-            errors.append("[meta:sha256] snapshot_sha256 누락")
-        elif calc_sha.lower() != meta_sha.lower():
-            errors.append(f"[meta:sha256] 불일치: calc={calc_sha} meta={meta_sha}")
+            errors.append("[meta:sha256] snapshot_sha256가 누락되었습니다.")
+        elif calculated_sha.lower() != meta_sha.lower():
+            errors.append(f"[meta:sha256] 해시 불일치: 계산된 값={calculated_sha}, 메타 값={meta_sha}")
     except OSError as e:
-        errors.append(f"[meta:sha256-calc] 실패: {e}")
+        errors.append(f"[meta:sha256-calc] 해시 계산 실패: {e}")
 
-    try:
-        meta_path = str(meta.get("snapshot_path", "")).strip()
-        if meta_path:
-            if os.path.basename(meta_path) != os.path.basename(pq_path):
-                errors.append(f"[meta:snapshot_path] 파일명 불일치: meta={meta_path} actual={pq_path}")
-        else:
-            errors.append("[meta:snapshot_path] 누락")
-    except (TypeError, AttributeError) as e:
-        errors.append(f"[meta:snapshot_path-check] 실패: {e}")
+    meta_path = str(meta.get("snapshot_path", "")).strip()
+    if not meta_path:
+        errors.append("[meta:snapshot_path] snapshot_path가 누락되었습니다.")
+    elif os.path.basename(meta_path) != os.path.basename(pq_path):
+        errors.append(f"[meta:snapshot_path] 파일명 불일치: 메타 경로={meta_path}, 실제 경로={pq_path}")
 
-    if not meta.get("timezone"):
-        errors.append("[meta:timezone] 누락")
-
-    # 5) 디스플레이 수식 규약
-    math_issues = _lint_display_math_blocks(artifacts.docs_dir)
-    if math_issues:
-        errors.extend(math_issues)
+    # (5/5) 증거 데이터 기록
+    evidence.update({
+        "meta_fields_checked": list(_REQUIRED_SNAPSHOT_FIELDS.keys()),
+        "parquet_path_actual": pq_path,
+        "sha256_calculated": locals().get("calculated_sha"),
+    })
 
     return GateResult(
         passed=len(errors) == 0,

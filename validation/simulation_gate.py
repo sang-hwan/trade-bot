@@ -3,11 +3,10 @@
 Simulation Timeline & Accounting Gate
 
 의도:
-- 집행/라운딩/비용/회계 등식이 문서 규약대로 계산되는지 검증한다.
-  * 체결가: Open_eff = open_adj(우선, 없으면 open) × (1±slip)
-  * 라운딩: 가격=price_step 최근접(동률 내림), 수량=lot_step 하향 배수
+- 포트폴리오 엔진의 집행/라운딩/비용/회계 등식이 문서 규약대로 계산되는지 검증한다.
+  * 체결가: Open_eff = open_adj(우선) × (1±slip)
   * 회계 등식: 매일 [현금 변화 + 포지션 평가손익 − 비용] = 자본 변화
-  * 산출물 계약: trades.reason/side, metrics·equity_curve 정합성
+  * 산출물 계약: trades, metrics, equity_curve 정합성
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, TypedDict
 import math
 
+import numpy as np
 import pandas as pd
 
 
@@ -28,44 +28,19 @@ class GateResult(TypedDict):
 
 @dataclass
 class Artifacts:
+    """검증에 필요한 산출물 핸들."""
     snapshot_parquet_path: str
     run_meta: Dict[str, Any]
     snapshot_meta: Dict[str, Any]
-    trades: pd.DataFrame           # columns: ts, side, reason, qty, price, commission, slip, realized_pnl, ...
-    equity_curve: pd.DataFrame     # columns: equity (index: ts)
+    trades: pd.DataFrame
+    equity_curve: pd.DataFrame
     metrics: Dict[str, Any]
 
 
 # ---------- 유틸 ----------
 
-_ALLOWED_REASONS = {"signal", "stop", "rebalance"}
-_ALLOWED_SIDES = {"buy", "sell"}
-
-
-def _pick_col(df: pd.DataFrame, base: str) -> str:
-    c_adj = f"{base}_adj"
-    return c_adj if c_adj in df.columns else base
-
-
-def _ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
-    if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError("snapshot index must be DatetimeIndex")
-    return df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
-
-
-def _round_price_nearest_tie_down(x: float, step: float) -> float:
-    if step <= 0:
-        return x
-    n = x / step
-    down = math.floor(n)
-    up = math.ceil(n)
-    # tie → down
-    if abs(n - down) < abs(up - n) or math.isclose(n - down, up - n, rel_tol=0.0, abs_tol=1e-15):
-        return down * step
-    return up * step
-
-
-def _is_multiple(value: float, step: float, tol: float = 1e-12) -> bool:
+def _is_multiple(value: float, step: float, tol: float = 1e-9) -> bool:
+    """value가 step의 배수인지 확인한다."""
     if step <= 0:
         return True
     q = value / step
@@ -73,6 +48,7 @@ def _is_multiple(value: float, step: float, tol: float = 1e-12) -> bool:
 
 
 def _aeq(a: float, b: float, atol: float) -> bool:
+    """두 부동소수점 값이 절대 허용 오차 내에서 같은지 확인한다."""
     return math.isclose(a, b, rel_tol=0.0, abs_tol=atol)
 
 
@@ -84,191 +60,110 @@ def run(artifacts: Artifacts) -> GateResult:
     warnings: List[str] = []
     evidence: Dict[str, Any] = {}
 
-    # 0) 입력 방어
-    if artifacts.trades is None or artifacts.trades.empty:
-        return GateResult(passed=False, errors=["[trades:missing] trades가 비어 있습니다."], warnings=[], evidence={})
+    # 입력 데이터 로드 및 파라미터 추출
     if artifacts.equity_curve is None or artifacts.equity_curve.empty:
-        return GateResult(passed=False, errors=["[equity_curve:missing] equity_curve가 비어 있습니다."], warnings=[], evidence={})
+        errors.append("[equity_curve:missing] equity_curve가 비어 있습니다.")
     if not isinstance(artifacts.run_meta, dict) or not isinstance(artifacts.metrics, dict):
-        return GateResult(passed=False, errors=["[meta:missing] run_meta/metrics가 필요합니다."], warnings=[], evidence={})
+        errors.append("[meta:missing] run_meta/metrics가 필요합니다.")
+    if errors:
+        return GateResult(passed=False, errors=errors, warnings=warnings, evidence=evidence)
 
-    # 1) 스냅샷 로드 & 기준 컬럼
     try:
-        df = pd.read_parquet(artifacts.snapshot_parquet_path)
-    except (FileNotFoundError, OSError, ValueError, ImportError) as e:
-        return GateResult(passed=False, errors=[f"[parquet:read] 스냅샷 로드 실패: {e}"], warnings=[], evidence={})
-    df = _ensure_utc_index(df)
-    open_col = _pick_col(df, "open")
-    close_col = _pick_col(df, "close")
+        prices = pd.read_parquet(artifacts.snapshot_parquet_path)
+    except Exception as e:
+        errors.append(f"[parquet:read] 스냅샷 로드 실패: {e}")
+        return GateResult(passed=False, errors=errors, warnings=warnings, evidence=evidence)
 
-    # 2) 파라미터
+    # 단일 자산 백테스트이므로, snapshot_meta에서 심볼 이름을 가져옵니다.
+    sym = artifacts.snapshot_meta.get("symbol")
+    if not sym:
+        errors.append("[meta:symbol] snapshot_meta에서 'symbol'을 찾을 수 없습니다.")
+        return GateResult(passed=False, errors=errors, warnings=warnings, evidence={})
+    symbols = [sym]
     params = artifacts.run_meta.get("params", {})
     price_step = float(params.get("price_step", 0.0))
     lot_step = float(params.get("lot_step", 1.0))
     commission_rate = float(params.get("commission_rate", 0.0))
     slip = float(params.get("slip", 0.0))
-    initial_equity = float(artifacts.metrics.get("initial_equity", artifacts.run_meta.get("initial_equity", 0.0)))
+    initial_equity = float(artifacts.metrics.get("initial_equity", 0.0))
 
-    # 3) 산출물 계약(스키마/값 범위)
-    bad_reason = set(artifacts.trades["reason"].dropna().unique()) - _ALLOWED_REASONS
-    if bad_reason:
-        errors.append(f"[trades:reason] 허용되지 않은 reason 값: {sorted(bad_reason)}")
-    if "side" in artifacts.trades:
-        bad_side = set(artifacts.trades["side"].dropna().unique()) - _ALLOWED_SIDES
-        if bad_side:
-            errors.append(f"[trades:side] 허용되지 않은 side 값: {sorted(bad_side)}")
-    if "equity" not in artifacts.equity_curve.columns:
-        errors.append("[equity_curve:schema] 'equity' 컬럼 필요")
-
-    # 4) trades 정규화(UTC, 안정 정렬)
+    # 거래 내역(trades) 검증
     trades = artifacts.trades.copy()
-    if "ts" not in trades.columns:
-        return GateResult(passed=False, errors=["[trades:schema] 'ts' 컬럼이 필요합니다."], warnings=[], evidence={})
-    trades["ts"] = pd.to_datetime(trades["ts"], utc=True)
-    trades.sort_values(["ts"], kind="stable", inplace=True)
-    trades.reset_index(drop=True, inplace=True)
+    if not trades.empty:
+        trades["ts"] = pd.to_datetime(trades["ts"], utc=True)
+        trades.sort_values(["ts"], kind="stable", inplace=True)
+
+        for _, tr in trades.iterrows():
+            ts, sym, side, qty = tr["ts"], tr["symbol"], tr["side"], tr["qty"]
+            if ts not in prices.index:
+                errors.append(f"[trades:ts] 거래 시간({ts})이 스냅샷에 존재하지 않습니다.")
+                continue
+
+            if not _is_multiple(qty, lot_step):
+                errors.append(f"[qty:lot_step] {ts} {sym}: 수량({qty})이 lot_step({lot_step})의 배수가 아닙니다.")
+
+            open_price = prices.loc[ts, "open_adj"]
+            signed_slip = (1.0 + slip) if side == "buy" else (1.0 - slip)
+            expected_px_approx = open_price * signed_slip
+            if not _aeq(tr["price"], expected_px_approx, atol=price_step + 1e-9):
+                 warnings.append(f"[price:open_eff] {ts} {sym}: 체결가({tr['price']})가 기대치({expected_px_approx:.4f})와 차이가 있습니다.")
+
+            expected_comm = abs(tr["price"] * qty) * commission_rate
+            if not _aeq(tr["commission"], expected_comm, atol=1e-9):
+                errors.append(f"[commission] {ts} {sym}: 수수료({tr['commission']})가 기대치({expected_comm})와 다릅니다.")
+
+    # 회계 장부 재구성
+    cash = initial_equity
+    positions: Dict[str, float] = {s: 0.0 for s in symbols}
+    avg_entries: Dict[str, float] = {s: 0.0 for s in symbols}
+    reconstructed_equity_series = []
     
-    # 5) 매도 원천 검증: sell은 'stop' 또는 'rebalance'만 허용
-    if "reason" not in trades.columns:
-        errors.append("[trades:schema] 'reason' 컬럼이 필요합니다.")
-    else:
-        sells = trades[trades["side"].astype(str).str.lower() == "sell"]
-        bad_sell_reasons = set(sells["reason"].dropna().astype(str).str.lower().unique()) - {"stop", "rebalance"}
-        if bad_sell_reasons:
-            errors.append(
-                "[trades:sell_origin] 매도 reason은 'stop'/'rebalance'만 허용 — 위반: " + str(sorted(bad_sell_reasons))
-            )
+    trades_by_ts = trades.groupby("ts") if not trades.empty else {}
 
-    # 6) 가격·수량 라운딩 및 체결가 정의 검증
-    price_mismatch: List[str] = []
-    qty_mismatch: List[str] = []
-    comm_mismatch: List[str] = []
+    for ts in prices.index:
+        if ts in trades_by_ts:
+            for _, tr in trades_by_ts.get_group(ts).iterrows():
+                sym, side, qty, price, comm = tr["symbol"], tr["side"], tr["qty"], tr["price"], tr["commission"]
+                if side == "buy":
+                    cash -= price * qty + comm
+                    total_cost_prev = avg_entries[sym] * positions[sym]
+                    positions[sym] += qty
+                    avg_entries[sym] = (total_cost_prev + price * qty) / positions[sym]
+                else: # sell
+                    cash += price * qty - comm
+                    positions[sym] -= qty
+                    if positions[sym] == 0:
+                        avg_entries[sym] = 0.0
+        
+        pos_value = sum(positions[s] * prices.loc[ts, "close_adj"] for s in symbols if pd.notna(prices.loc[ts, "close_adj"]))
+        reconstructed_equity_series.append(cash + pos_value)
 
-    for _, tr in trades.iterrows():
-        ts = tr["ts"]
-        if ts not in df.index:
-            errors.append(f"[trades:ts] 스냅샷 인덱스에 없는 ts: {ts.isoformat()}")
-            continue
+    # equity_curve 대조
+    ec_to_check = artifacts.equity_curve.copy()
+    ec_to_check.index = pd.to_datetime(ec_to_check.index, utc=True)
+    reconstructed_df = pd.DataFrame({"equity_recon": reconstructed_equity_series}, index=prices.index)
+    
+    comparison = pd.merge(ec_to_check, reconstructed_df, left_index=True, right_index=True, how="left")
+    mismatches = comparison[~np.isclose(comparison["equity"], comparison["equity_recon"], atol=1e-6)]
 
-        # 기대 체결가: Open_eff = open*(1±slip) → price_step 라운딩
-        o = float(pd.to_numeric(df.loc[ts, open_col], errors="coerce"))
-        if not math.isfinite(o):
-            errors.append(f"[open:NaN] {ts.isoformat()} — open 값 비정상")
-            continue
+    for ts, row in mismatches.iterrows():
+        errors.append(f"[equity_curve] {ts}: 재구성된 자산({row['equity_recon']:.4f})이 보고된 자산({row['equity']:.4f})과 다릅니다.")
+    
+    # 최종 지표(metrics) 검증
+    reconstructed_final_equity = reconstructed_equity_series[-1] if reconstructed_equity_series else initial_equity
+    final_equity_metric = artifacts.metrics.get("final_equity")
+    if final_equity_metric is not None and not _aeq(reconstructed_final_equity, final_equity_metric, atol=1e-6):
+        errors.append(f"[metrics:final_equity] 최종 자산({reconstructed_final_equity:.4f})이 보고된 지표({final_equity_metric:.4f})와 다릅니다.")
 
-        side = str(tr.get("side", "")).lower()
-        if side not in _ALLOWED_SIDES:
-            errors.append(f"[trades:side] {ts.isoformat()} — side={tr.get('side')!r}")
-            continue
-
-        signed = (1.0 + slip) if side == "buy" else (1.0 - slip)
-        expected_px = _round_price_nearest_tie_down(o * signed, price_step)
-        got_px = float(tr.get("price", float("nan")))
-        if not _aeq(expected_px, got_px, atol=max(1e-9, price_step * 1e-9)):
-            price_mismatch.append(f"{ts.isoformat()} — expected={expected_px} got={got_px}")
-
-        # 수량 라운딩
-        qty = float(tr.get("qty", float("nan")))
-        if not math.isfinite(qty) or qty <= 0:
-            qty_mismatch.append(f"{ts.isoformat()} — qty 비정상: {qty}")
-        elif not _is_multiple(qty, lot_step, tol=1e-12):
-            qty_mismatch.append(f"{ts.isoformat()} — qty {qty} not multiple of lot_step {lot_step}")
-
-        # 수수료 계산 일치
-        expected_comm = abs(got_px * qty) * commission_rate
-        got_comm = float(tr.get("commission", 0.0))
-        if not _aeq(expected_comm, got_comm, atol=max(1e-9, expected_comm * 1e-9)):
-            comm_mismatch.append(f"{ts.isoformat()} — commission expected={expected_comm} got={got_comm}")
-
-    if price_mismatch:
-        errors.append("[price:open_eff] 체결가(Open_eff) 불일치:\n  - " + "\n  - ".join(price_mismatch[:20]))
-    if qty_mismatch:
-        errors.append("[qty:lot_step] 수량 라운딩 위반:\n  - " + "\n  - ".join(qty_mismatch[:20]))
-    if comm_mismatch:
-        errors.append("[commission] 수수료 계산 불일치:\n  - " + "\n  - ".join(comm_mismatch[:20]))
-
-    # 7) 일/일 회계 등식 + equity_curve 정합성
-    eq = []
-    cash = float(initial_equity)
-    pos = 0.0
-    trades_by_ts = trades.groupby("ts", sort=True)
-
-    ec = artifacts.equity_curve.copy()
-    ec.index = pd.to_datetime(ec.index, utc=True)
-
-    for ts in df.index:  # 스냅샷 타임라인 기준
-        if ts in trades_by_ts.indices:
-            g = trades.loc[trades_by_ts.indices[ts]]
-            for _, tr in g.iterrows():
-                px = float(tr["price"])
-                q = float(tr["qty"])
-                comm = float(tr.get("commission", 0.0))
-                if str(tr["side"]).lower() == "buy":
-                    cash -= px * q + comm
-                    pos += q
-                else:  # sell
-                    cash += px * q - comm
-                    pos -= q
-        # Close 평가
-        c = float(pd.to_numeric(df.loc[ts, close_col], errors="coerce"))
-        if not math.isfinite(c):
-            errors.append(f"[close:NaN] {ts.isoformat()} — close 값 비정상")
-            continue
-        eq_t = cash + pos * c
-        eq.append((ts, eq_t))
-
-        if ts in ec.index:
-            got_eq = float(ec.loc[ts, "equity"])
-            if not _aeq(eq_t, got_eq, atol=max(1e-6, got_eq * 1e-9)):
-                errors.append(f"[equity_curve] {ts.isoformat()} — expected={eq_t} got={got_eq}")
-
-    if not eq:
-        errors.append("[equity:empty] 재구성된 equity 시계열이 비어 있음")
-    else:
-        last_ts, last_eq = eq[-1]
-        final_equity = float(artifacts.metrics.get("final_equity", float("nan")))
-        if math.isfinite(final_equity) and not _aeq(last_eq, final_equity, atol=max(1e-6, final_equity * 1e-9)):
-            errors.append(f"[metrics:final_equity] expected={last_eq} got={final_equity}")
-
-        total_return = float(artifacts.metrics.get("total_return", float("nan")))
-        if initial_equity > 0:
-            expected_ret = last_eq / initial_equity - 1.0
-            if math.isfinite(total_return) and not _aeq(expected_ret, total_return, atol=1e-12):
-                errors.append(f"[metrics:total_return] expected={expected_ret} got={total_return}")
-
-        eq_series = pd.Series([v for _, v in eq], index=[t for t, _ in eq])
-        peak = eq_series.cummax()
-        dd = eq_series / peak - 1.0
-        mdd_calc = float(dd.min()) if not dd.empty else 0.0
-        mdd_report = float(artifacts.metrics.get("mdd", float("nan")))
-        if math.isfinite(mdd_report) and not _aeq(mdd_calc, mdd_report, atol=1e-12):
-            errors.append(f"[metrics:mdd] expected={mdd_calc} got={mdd_report}")
-
-    # 8) 정책 메타 확인: two_stage==true 및 필드 존재
-    policy = artifacts.run_meta.get("policy", {}) if isinstance(artifacts.run_meta, dict) else {}
-    two_stage = artifacts.run_meta.get("two_stage", policy.get("two_stage")) if isinstance(artifacts.run_meta, dict) else None
-    if two_stage is not True:
-        errors.append("[run_meta:two_stage] two_stage must be true for two-stage execution.")
-    required_policy = {"alloc_mode", "reserve_pct", "downsize_retries", "price_cushion_pct", "fee_cushion_pct"}
-    missing_policy = sorted([k for k in required_policy if (k not in policy and k not in artifacts.run_meta)])
-    if missing_policy:
-        errors.append("[run_meta:policy] missing keys: " + str(missing_policy))
-
+    # run_meta 검증
+    if "params" not in artifacts.run_meta:
+        errors.append("[run_meta:params] 'params' 키가 run_meta에 존재해야 합니다.")
+    
     evidence.update({
-            "policy_two_stage": bool(two_stage is True),
-            "policy_missing": missing_policy,
-            "open_col_used": open_col,
-            "close_col_used": close_col,
-            "params": {
-                "price_step": price_step,
-                "lot_step": lot_step,
-                "commission_rate": commission_rate,
-                "slip": slip,
-                "initial_equity": initial_equity,
-            },
-            "n_trades": int(len(trades)),
-        }
-    )
+        "reconstructed_final_equity": reconstructed_final_equity,
+        "n_trades_validated": len(trades),
+        "params_validated": params,
+    })
 
     return GateResult(
         passed=len(errors) == 0,

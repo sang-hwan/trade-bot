@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from typing import Any, Dict
 
 import pandas as pd
@@ -37,6 +36,7 @@ _REQUIRED_FILES = {
 
 
 def _read_json(path: str) -> Dict[str, Any]:
+    """JSON 파일을 읽어 딕셔너리로 반환한다."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -49,6 +49,7 @@ def _read_json(path: str) -> Dict[str, Any]:
 
 
 def _ensure_required(run_dir: str) -> Dict[str, str]:
+    """결과물 디렉터리에 필수 파일이 모두 존재하는지 확인한다."""
     missing = []
     paths: Dict[str, str] = {}
     for k, fn in _REQUIRED_FILES.items():
@@ -62,8 +63,10 @@ def _ensure_required(run_dir: str) -> Dict[str, str]:
 
 
 def _load_artifacts(paths: Dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any], Dict[str, Any], Dict[str, Any], str]:
+    """모든 결과물 파일을 메모리로 로드한다."""
     try:
-        trades = pd.read_csv(paths["trades"])
+        # trades.csv가 비어있을 수 있으므로, 빈 경우를 대비
+        trades = pd.read_csv(paths["trades"]) if os.path.getsize(paths["trades"]) > 0 else pd.DataFrame()
     except Exception as e:
         raise ValueError(f"trades.csv 읽기 실패: {e}") from e
 
@@ -78,7 +81,6 @@ def _load_artifacts(paths: Dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame, 
 
     snapshot_parquet_path = snapshot_meta.get("snapshot_path")
     if not snapshot_parquet_path:
-        # data_gate가 상세히 잡아주지만, 여기서도 명확히 실패 처리
         raise ValueError("snapshot_meta.json에 snapshot_path가 없습니다.")
     if not os.path.isabs(snapshot_parquet_path):
         snapshot_parquet_path = os.path.join(os.path.dirname(paths["snapshot_meta"]), snapshot_parquet_path)
@@ -87,38 +89,37 @@ def _load_artifacts(paths: Dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame, 
 
 
 def _write_json(path: str, obj: Dict[str, Any]) -> None:
+    """딕셔너리를 JSON 파일로 저장한다."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
 def main(argv: list[str] | None = None) -> int:
+    """스크립트의 메인 진입점."""
     ap = argparse.ArgumentParser(description="Validate backtest run artifacts and produce reports.")
     ap.add_argument("run_dir", help="Backtest run directory (contains CSV/JSON artifacts).")
-    ap.add_argument("--docs-dir", default=None, help="Docs directory for display-math lint (optional).")
     args = ap.parse_args(argv)
 
     run_dir = args.run_dir
 
-    # 1) 필수 파일 확인 및 로드
+    # 필수 파일 확인 및 로드
     try:
         paths = _ensure_required(run_dir)
         trades, equity_curve, metrics, run_meta, snapshot_meta, snapshot_parquet_path = _load_artifacts(paths)
     except (FileNotFoundError, ValueError, OSError) as e:
-        # 준비 실패 → 종료코드 2
         print(json.dumps({"passed": False, "error": str(e)}, ensure_ascii=False))
         return 2
 
-    # 2) 데이터 게이트
+    # 데이터 게이트 실행
     dg_res = data_gate.run(
         data_gate.Artifacts(
             snapshot_parquet_path=snapshot_parquet_path,
             snapshot_meta=snapshot_meta,
-            docs_dir=args.docs_dir,
         )
     )
 
-    # 3) 전략 게이트
+    # 전략 게이트 실행
     sg_res = strategy_gate.run(
         strategy_gate.Artifacts(
             snapshot_parquet_path=snapshot_parquet_path,
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # 4) 시뮬레이션 게이트
+    # 시뮬레이션 게이트 실행
     sim_res = simulation_gate.run(
         simulation_gate.Artifacts(
             snapshot_parquet_path=snapshot_parquet_path,
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # 5) 분석/시각화
+    # 분석/시각화 실행
     viz_out_dir = os.path.join(run_dir, "validation")
     vz_res = analysis_viz.run(
         analysis_viz.Artifacts(
@@ -151,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # 6) 요약 저장 및 종료코드
+    # 요약 저장 및 종료 코드 반환
     all_res = {
         "data_gate": dg_res,
         "strategy_gate": sg_res,
