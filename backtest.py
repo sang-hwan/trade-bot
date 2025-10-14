@@ -133,10 +133,16 @@ def run_once(
     stops_df = donchian_stop_long(df, N=N)
     sizing_df = build_fixed_fractional_spec(df, N=N, f=f, lot_step=lot_step, V=V, PV=PV)
 
-    # 단일 자산 리밸런싱 스펙 생성 (목표 비중 100%)
-    close_adj = df[["close_adj"]].rename(columns={"close_adj": sym})
-    target_weights = pd.Series({sym: 1.0})
-    rebal_spec = build_rebalancing_spec_ts(close_adj, target_weights, cash_flow=0.0)
+    # 리밸런싱 스펙 생성 (자산이 2개 이상일 때만 의미 있음)
+    num_assets = 1  # 현재는 단일 자산만 지원
+    if num_assets > 1:
+        close_adj = df[["close_adj"]].rename(columns={"close_adj": sym})
+        values_for_rebal = close_adj.shift(1)
+        target_weights = pd.Series({sym: 1.0})
+        rebal_spec = build_rebalancing_spec_ts(values_for_rebal, target_weights, cash_flow=0.0)
+    else:
+        empty_df = pd.DataFrame(0.0, index=df.index, columns=[sym])
+        rebal_spec = {"buy_notional": empty_df, "sell_notional": empty_df}
 
     # 엔진 입력을 위한 데이터 재구성
     prices_df = df.copy()

@@ -1,0 +1,17 @@
+{
+  "initial_equity": 1000000.0,
+  "final_equity": 1984946.5498564066,
+  "total_return": 0.9849465498564067,
+  "mdd": -0.14614214005784054,
+  "cagr": 0.09258620452976096,
+  "n_trades": 69,
+  "n_realized": 69,
+  "win_rate": 0.2318840579710145,
+  "payoff": 3.08732267097233,
+  "paths": {
+    "equity_png": ".\\runs\\AAPL_backtest_run\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\AAPL_backtest_run\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\AAPL_backtest_run\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\AAPL_backtest_run\\validation\\fig_trade_pnl.png"
+  }
+}

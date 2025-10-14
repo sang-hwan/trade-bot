@@ -141,6 +141,10 @@ def run(
         }
 
     symbols = list(prices.columns.get_level_values(0).unique())
+    
+    used_cols = {col[1] for col in prices.columns}
+    open_col = "open_adj" if "open_adj" in used_cols else "open"
+    close_col = "close_adj" if "close_adj" in used_cols else "close"
 
     # 상태 변수 초기화
     cash: float = float(initial_equity)
@@ -170,11 +174,11 @@ def run(
         for sym in symbols:
             if sym not in stop_symbols_today and positions[sym] == 0 and signals.loc[ts, sym] == 1:
                 spec_row = sizing_spec[sym].loc[ts]
-                f, stop_level = spec_row["f"], spec_row["stop_level"]
-                entry_px_est = prices.loc[ts_prev, (sym, "close_adj")]
+                f, stop_level = spec_row["f"], spec_row["stop_level"] 
+                entry_px_est = prices.loc[ts_prev, (sym, close_col)]
                 D = entry_px_est - stop_level
                 if D > 0:
-                    current_total_equity = cash + sum(positions[s] * prices.loc[ts_prev, (s, "close_adj")] for s in symbols if pd.notna(prices.loc[ts_prev, (s, "close_adj")]))
+                    current_total_equity = cash + sum(positions[s] * prices.loc[ts_prev, (s, close_col)] for s in symbols if pd.notna(prices.loc[ts_prev, (s, close_col)]))
                     qty = np.floor((f * current_total_equity) / D / lot_step) * lot_step
                     if qty > 0:
                          orders_today.append({"symbol": sym, "side": "buy", "qty": qty, "reason": "signal"})
@@ -184,14 +188,14 @@ def run(
         sell_notional = rebalancing_spec["sell_notional"].loc[ts]
         for sym, notional in buy_notional.items():
             if notional > 0:
-                 px_est = prices.loc[ts, (sym, "open_adj")]
+                 px_est = prices.loc[ts, (sym, open_col)]
                  if px_est > 0:
                     qty = np.floor(notional / px_est / lot_step) * lot_step
                     if qty > 0:
                         orders_today.append({"symbol": sym, "side": "buy", "qty": qty, "reason": "rebalance"})
         for sym, notional in sell_notional.items():
             if notional > 0 and positions[sym] > 0:
-                px_est = prices.loc[ts, (sym, "open_adj")]
+                px_est = prices.loc[ts, (sym, open_col)]
                 if px_est > 0:
                     qty_to_sell = np.floor(notional / px_est / lot_step) * lot_step
                     qty = min(positions[sym], qty_to_sell)
@@ -240,7 +244,7 @@ def run(
                         positions[sym] += qty
                         avg_entries[sym] = (total_cost_prev + exec_price * qty) / positions[sym]
                         
-                        pos_value_after = sum(p*prices.loc[ts, (s, 'close_adj')] for s, p in positions.items() if pd.notna(prices.loc[ts, (s, 'close_adj')]))
+                        pos_value_after = sum(p*prices.loc[ts, (s, close_col)] for s, p in positions.items() if pd.notna(prices.loc[ts, (s, close_col)]))
                         equity_after = cash + pos_value_after
                         trades.append(Trade(ts, sym, side, reason, qty, exec_price, commission, 0.0, equity_after, cash, positions[sym]))
                 elif side == "sell":
@@ -251,12 +255,12 @@ def run(
                         if positions[sym] == 0: 
                             avg_entries[sym] = 0.0
                         
-                        pos_value_after = sum(p*prices.loc[ts, (s, 'close_adj')] for s, p in positions.items() if pd.notna(prices.loc[ts, (s, 'close_adj')]))
+                        pos_value_after = sum(p*prices.loc[ts, (s, close_col)] for s, p in positions.items() if pd.notna(prices.loc[ts, (s, close_col)]))
                         equity_after = cash + pos_value_after
                         trades.append(Trade(ts, sym, side, reason, qty, exec_price, commission, realized, equity_after, cash, positions[sym]))
 
         # 6. 일일 자산 가치 스냅샷
-        pos_value = sum(positions[sym] * prices.loc[ts, (sym, "close_adj")] for sym in symbols if pd.notna(prices.loc[ts, (sym, "close_adj")]))
+        pos_value = sum(positions[sym] * prices.loc[ts, (sym, close_col)] for sym in symbols if pd.notna(prices.loc[ts, (sym, close_col)]))
         equity_today = cash + pos_value
         equity_series.append(equity_today)
 

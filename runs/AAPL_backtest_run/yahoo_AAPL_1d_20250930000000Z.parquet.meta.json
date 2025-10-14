@@ -1,0 +1,32 @@
+{
+  "source": "yahoo",
+  "symbol": "AAPL",
+  "start": "2018-01-02T00:00:00Z",
+  "end": "2025-09-30T00:00:00Z",
+  "interval": "1d",
+  "rows": 1947,
+  "columns": 10,
+  "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\AAPL_backtest_run\\yahoo_AAPL_1d_20250930000000Z.parquet",
+  "snapshot_sha256": "4f2ac6c7b74d95381667bcc703042c74b45f75b13224b11c9409a1ff8aba3bd0",
+  "collected_at": "2025-10-14T10:01:06Z",
+  "timezone": "UTC",
+  "column_names": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "AdjClose",
+    "open_adj",
+    "high_adj",
+    "low_adj",
+    "close_adj"
+  ],
+  "requested_start": "2018-01-01",
+  "requested_end": "2025-09-30",
+  "base_currency": "USD",
+  "fx_source": null,
+  "fx_source_ts": null,
+  "calendar_id": "XNAS",
+  "instrument_registry_hash": null
+}

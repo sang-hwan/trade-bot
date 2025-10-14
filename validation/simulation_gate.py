@@ -86,7 +86,9 @@ def run(artifacts: Artifacts) -> GateResult:
     commission_rate = float(params.get("commission_rate", 0.0))
     slip = float(params.get("slip", 0.0))
     initial_equity = float(artifacts.metrics.get("initial_equity", 0.0))
-
+    price_cols_used = artifacts.run_meta.get("price_columns_used", {})
+    open_col = price_cols_used.get("open", "open_adj")
+    close_col = price_cols_used.get("close", "close_adj")
     # 거래 내역(trades) 검증
     trades = artifacts.trades.copy()
     if not trades.empty:
@@ -102,7 +104,7 @@ def run(artifacts: Artifacts) -> GateResult:
             if not _is_multiple(qty, lot_step):
                 errors.append(f"[qty:lot_step] {ts} {sym}: 수량({qty})이 lot_step({lot_step})의 배수가 아닙니다.")
 
-            open_price = prices.loc[ts, "open_adj"]
+            open_price = prices.loc[ts, open_col]
             signed_slip = (1.0 + slip) if side == "buy" else (1.0 - slip)
             expected_px_approx = open_price * signed_slip
             if not _aeq(tr["price"], expected_px_approx, atol=price_step + 1e-9):
@@ -135,7 +137,7 @@ def run(artifacts: Artifacts) -> GateResult:
                     if positions[sym] == 0:
                         avg_entries[sym] = 0.0
         
-        pos_value = sum(positions[s] * prices.loc[ts, "close_adj"] for s in symbols if pd.notna(prices.loc[ts, "close_adj"]))
+        pos_value = sum(positions[s] * prices.loc[ts, close_col] for s in symbols if pd.notna(prices.loc[ts, close_col]))
         reconstructed_equity_series.append(cash + pos_value)
 
     # equity_curve 대조
