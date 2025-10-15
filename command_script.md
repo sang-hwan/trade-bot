@@ -57,7 +57,7 @@ $SIRI_RUN_DIR = '.\runs\SIRI_backtest_run' # 결과물 저장 디렉터리
 
 $ArgsSIRI = $ArgsAAPL.Clone() # AAPL 인자 복사 후 일부만 수정
 $ArgsSIRI[3] = 'SIRI'          # --symbol 인자 변경
-$ArgsSIRI[25] = $SIRI_RUN_DIR  # --out_dir 인자 변경
+$ArgsSIRI[32] = $SIRI_RUN_DIR  # --out_dir 인자 변경
 
 Invoke-Backtest -ArgList $ArgsSIRI
 Invoke-Validate -RunDir $SIRI_RUN_DIR
@@ -69,7 +69,7 @@ $GPRO_RUN_DIR = '.\runs\GPRO_backtest_run' # 결과물 저장 디렉터리
 
 $ArgsGPRO = $ArgsAAPL.Clone() # AAPL 인자 복사 후 일부만 수정
 $ArgsGPRO[3] = 'GPRO'          # --symbol 인자 변경
-$ArgsGPRO[25] = $GPRO_RUN_DIR  # --out_dir 인자 변경
+$ArgsGPRO[32] = $GPRO_RUN_DIR  # --out_dir 인자 변경
 
 Invoke-Backtest -ArgList $ArgsGPRO
 Invoke-Validate -RunDir $GPRO_RUN_DIR

@@ -22,8 +22,8 @@
         "calendar_id",
         "instrument_registry_hash"
       ],
-      "parquet_path_actual": "C:\\work_space_private\\trade-bot\\runs\\AAPL_backtest_run\\yahoo_AAPL_1d_20250930000000Z.parquet",
-      "sha256_calculated": "38a55b8ee334b2222e92feae5a8946d68ee4b4d18203fec2baaa497ae8990b7c"
+      "parquet_path_actual": "C:\\work_space_private\\trade-bot\\runs\\SIRI_backtest_run\\yahoo_SIRI_1d_20250930000000Z.parquet",
+      "sha256_calculated": "7853decf56b13335befc139fcdf4e2736276415ccbe61e423e8e93c485b30d1a"
     }
   },
   "strategy_gate": {
@@ -37,8 +37,8 @@
         "sma_short": 10,
         "sma_long": 50
       },
-      "n_signal_trades_validated": 35,
-      "n_stop_trades_validated": 34
+      "n_signal_trades_validated": 42,
+      "n_stop_trades_validated": 41
     }
   },
   "simulation_gate": {
@@ -46,8 +46,8 @@
     "errors": [],
     "warnings": [],
     "evidence": {
-      "reconstructed_final_equity": 1984946.5498564066,
-      "n_trades_validated": 69,
+      "reconstructed_final_equity": 901377.0262756903,
+      "n_trades_validated": 83,
       "params_validated": {
         "lot_step": 1.0,
         "price_step": 0.01,
@@ -66,17 +66,17 @@
     "errors": [],
     "warnings": [],
     "evidence": {
-      "summary_path": ".\\runs\\AAPL_backtest_run\\validation\\analysis_summary.json",
+      "summary_path": ".\\runs\\SIRI_backtest_run\\validation\\analysis_summary.json",
       "figure_paths": [
-        ".\\runs\\AAPL_backtest_run\\validation\\fig_equity.png",
-        ".\\runs\\AAPL_backtest_run\\validation\\fig_drawdown.png",
-        ".\\runs\\AAPL_backtest_run\\validation\\fig_rolling_sharpe.png",
-        ".\\runs\\AAPL_backtest_run\\validation\\fig_trade_pnl.png"
+        ".\\runs\\SIRI_backtest_run\\validation\\fig_equity.png",
+        ".\\runs\\SIRI_backtest_run\\validation\\fig_drawdown.png",
+        ".\\runs\\SIRI_backtest_run\\validation\\fig_rolling_sharpe.png",
+        ".\\runs\\SIRI_backtest_run\\validation\\fig_trade_pnl.png"
       ],
       "stats": {
-        "cagr": 0.09258620452976096,
-        "win_rate": 0.2318840579710145,
-        "payoff": 3.08732267097233
+        "cagr": -0.013320846676713183,
+        "win_rate": 0.1566265060240964,
+        "payoff": 1.6800013992742804
       }
     }
   }

@@ -123,7 +123,7 @@ def run(artifacts: Artifacts) -> GateResult:
     trades_by_ts = trades.groupby("ts") if not trades.empty else {}
 
     for ts in prices.index:
-        if ts in trades_by_ts:
+        if ts in trades_by_ts.groups:
             for _, tr in trades_by_ts.get_group(ts).iterrows():
                 sym, side, qty, price, comm = tr["symbol"], tr["side"], tr["qty"], tr["price"], tr["commission"]
                 if side == "buy":

@@ -7,8 +7,8 @@
   "rows": 1947,
   "columns": 10,
   "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\AAPL_backtest_run\\yahoo_AAPL_1d_20250930000000Z.parquet",
-  "snapshot_sha256": "4f2ac6c7b74d95381667bcc703042c74b45f75b13224b11c9409a1ff8aba3bd0",
-  "collected_at": "2025-10-14T10:01:06Z",
+  "snapshot_sha256": "38a55b8ee334b2222e92feae5a8946d68ee4b4d18203fec2baaa497ae8990b7c",
+  "collected_at": "2025-10-15T04:30:21Z",
   "timezone": "UTC",
   "column_names": [
     "open",

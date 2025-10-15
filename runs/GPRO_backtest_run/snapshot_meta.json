@@ -1,14 +1,14 @@
 {
   "source": "yahoo",
-  "symbol": "AAPL",
+  "symbol": "GPRO",
   "start": "2018-01-02T00:00:00Z",
   "end": "2025-09-30T00:00:00Z",
   "interval": "1d",
   "rows": 1947,
   "columns": 10,
-  "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\AAPL_backtest_run\\yahoo_AAPL_1d_20250930000000Z.parquet",
-  "snapshot_sha256": "38a55b8ee334b2222e92feae5a8946d68ee4b4d18203fec2baaa497ae8990b7c",
-  "collected_at": "2025-10-15T04:30:21Z",
+  "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\GPRO_backtest_run\\yahoo_GPRO_1d_20250930000000Z.parquet",
+  "snapshot_sha256": "db7eabbc374253b4892fe5b1f067c0210a907252ff0b1c463f8ef4f3b508c41e",
+  "collected_at": "2025-10-15T04:38:25Z",
   "timezone": "UTC",
   "column_names": [
     "open",
