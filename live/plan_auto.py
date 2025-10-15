@@ -11,11 +11,12 @@ AUTO 계획 산출 모듈 (Python 3.11+)
 
 from __future__ import annotations
 
-from typing import Any
-from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime, timezone
-import os
 import json
+import os
+import sys
+from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 
 def _round_price_nearest(price: float, step: float) -> float:
@@ -28,6 +29,21 @@ def _round_price_nearest(price: float, step: float) -> float:
     return float((ticks * q).quantize(q, rounding=ROUND_HALF_UP))
 
 
+def scan_for_opportunities() -> list[str]:
+    """오늘 거래할 조건의 종목들을 스캔하여 리스트로 반환."""
+    # TODO: 실제 구현 시 API나 파일로부터 전체 종목 목록(유니버스)을 가져와야 합니다.
+    # 여기서는 설명의 편의를 위해 기존 백테스트 종목들을 유니버스로 가정합니다.
+    universe_tickers = ["AAPL", "SIRI", "GPRO"]
+    
+    # TODO: 유니버스 종목을 순회하며 '소형주', '박스권' 등 원하는 조건에 맞는 종목을 필터링하는
+    # 스크리닝 로직을 여기에 구현해야 합니다.
+    
+    # 현재는 모든 유니버스 종목을 거래 대상으로 간주하고 프로젝트 형식에 맞게 변환합니다.
+    qualified_symbols = [f"NASD:{ticker}" for ticker in universe_tickers]
+    
+    return qualified_symbols
+
+
 def build_plan_auto(
     cfg: dict[str, Any], *, source: str, interval: str
 ) -> tuple[list[str], dict[str, int], dict[str, dict[str, float]]]:
@@ -36,7 +52,7 @@ def build_plan_auto(
     반환:
       - stops_list : 오늘 시가 청산 대상 심볼 리스트
       - signals_map: 오늘 시가 진입 목표 수량(주)
-      - rebal_spec : 현금 기준 리밸 금액 맵(초기 버전은 빈 구조)
+      - rebal_spec : 현금 기준 리밸 금액 맵
     """
     # 전략/데이터 계층은 AUTO 모드에서만 사용하므로 지연 import
     from data.collect import collect
@@ -60,59 +76,47 @@ def build_plan_auto(
     sma_short = int(eng.get("sma_short", 10))
     sma_long = int(eng.get("sma_long", 50))
     initial_cash = float(cfg.get("initial_cash", 10_000.0))
-    assets = cfg.get("assets", [])
+    
+    target_symbols = scan_for_opportunities()
 
-    # 주석 필드 계산 파라미터
     price_step = float(cfg.get("price_step", 0.0))
     price_cushion_pct = 0.001
     fee_cushion_pct = 0.0005
 
     today_utc = dt.datetime.utcnow().date()
-    end = today_utc - dt.timedelta(days=1)  # D-1
+    end = today_utc - dt.timedelta(days=1)
     start = end - dt.timedelta(days=365 * LOOKBACK_YEARS)
 
     stops_list: list[str] = []
     signals_map: dict[str, int] = {}
     rebal_spec: dict[str, dict[str, float]] = {"buy_notional": {}, "sell_notional": {}}
-
-    # 감사용 주석(매수 후보)
     audit_signals: list[dict[str, Any]] = []
 
-    for a in assets:
-        symbol = a["symbol"]                  # 예: "NASD:AAPL"
-        y_ticker = symbol.split(":")[-1]      # Yahoo 심볼
+    for symbol in target_symbols:
+        y_ticker = symbol.split(":")[-1]
 
-        # 1) 수집 → 검증 → 조정
-        cr = collect(
-            source,
-            y_ticker,
-            start=start.isoformat(),
-            end=end.isoformat(),
-            interval=interval,
-            base_currency=base_ccy,
-            calendar_id=cal_id,
-        )
-        qv(cr.dataframe, require_volume=False, min_rows=50)
-        df = adj(cr.dataframe)
+        try:
+            cr = collect(
+                source, y_ticker, start=start.isoformat(), end=end.isoformat(),
+                interval=interval, base_currency=base_ccy, calendar_id=cal_id,
+            )
+            qv(cr.dataframe, require_volume=False, min_rows=sma_long + 5)
+            df = adj(cr.dataframe)
+        except Exception as e:
+            print(f"[WARN] {symbol}: 데이터 처리 중 오류 발생, 건너뜁니다. ({e})", file=sys.stderr)
+            continue
+
         if df.empty:
-            signals_map[symbol] = 0
-            audit_signals.append({
-                "symbol": symbol,
-                "requested_qty": 0,
-                "price_est": 0.0,
-                "cash_need": 0.0,
-                "will_enter": False,
-            })
             continue
 
         last_ts = df.index.max()
 
-        # 2) 스탑 판정 (D-1 종가 → D 오픈 청산)
+        # 스탑 판정 (D-1 종가 → D 오픈 청산)
         st = donchian_stop_long(df, N)
         if (last_ts in st.index) and bool(st.loc[last_ts, "stop_hit"]):
             stops_list.append(symbol)
 
-        # 3) 신호 판정 (D-1 종가 → D 오픈 진입)
+        # 신호 판정 (D-1 종가 → D 오픈 진입)
         sig = sma_cross_long_only(df, short=sma_short, long=sma_long, epsilon=epsilon)
         will_enter = (
             (last_ts in sig.index)
@@ -120,40 +124,30 @@ def build_plan_auto(
             and (int(sig.loc[last_ts]) == 1)
         )
 
-        # 4) 수량 산정 (Fixed Fractional) — D 오픈가 미상 → D-1 종가 프록시
+        # 수량 산정 (Fixed Fractional) — D 오픈가 미상 → D-1 종가 프록시
         spec = build_fixed_fractional_spec(df, N=N, f=f, lot_step=lot_step)
         stop_level = float(spec.loc[last_ts, "stop_level"])
-        last_close = float(
-            df.loc[last_ts, "close_adj"] if "close_adj" in df.columns else df.loc[last_ts, "close"]
-        )
-        entry_proxy = last_close
+        price_col = "close_adj" if "close_adj" in df.columns else "close"
+        last_close = float(df.loc[last_ts, price_col])
+        
         sz = size_from_spec(
-            entry_price=entry_proxy,
-            equity=initial_cash,
-            f=f,
-            stop_level=stop_level,
-            lot_step=lot_step,
-            V=None,
-            PV=None,
+            entry_price=last_close, equity=initial_cash, f=f,
+            stop_level=stop_level, lot_step=lot_step, V=None, PV=None,
         )
         q_exec = int(sz.get("Q_exec", 0))
         signals_map[symbol] = q_exec if will_enter else 0
 
-        # --- 매수 후보 주석 필드 ---
+        # 감사용 데이터 기록
         price_est = _round_price_nearest(last_close * (1.0 + price_cushion_pct), price_step)
         cash_need = price_est * float(q_exec) * (1.0 + fee_cushion_pct)
         audit_signals.append({
-            "symbol": symbol,
-            "requested_qty": q_exec,
-            "price_est": price_est,
-            "cash_need": cash_need,
-            "will_enter": bool(will_enter),
+            "symbol": symbol, "requested_qty": q_exec, "price_est": price_est,
+            "cash_need": cash_need, "will_enter": bool(will_enter),
         })
 
-    # 매도 원천 고정: 계획 단계에서 임의 현금 마련 매도 생성 금지
     assert set(rebal_spec.keys()) == {"buy_notional", "sell_notional"}
 
-    # 감사 플랜 저장: plan/plan.json
+    # 감사 플랜 저장 (실패는 비치명적)
     try:
         plan_dir = "plan"
         os.makedirs(plan_dir, exist_ok=True)
@@ -167,15 +161,11 @@ def build_plan_auto(
             },
             "stops": list(stops_list),
             "signals": audit_signals,
-            "rebal_summary": {
-                "buy_notional": rebal_spec.get("buy_notional", {}),
-                "sell_notional": rebal_spec.get("sell_notional", {}),
-            },
+            "rebal_summary": rebal_spec,
         }
         with open(os.path.join(plan_dir, "plan.json"), "w", encoding="utf-8") as f:
             json.dump(plan_doc, f, ensure_ascii=False, indent=2)
-    except (OSError, TypeError, ValueError):
-        # 계획 저장 실패는 비치명
-        pass
+    except (OSError, TypeError, ValueError) as e:
+        print(f"[WARN] 감사 플랜 저장 실패: {e}", file=sys.stderr)
 
     return stops_list, signals_map, rebal_spec

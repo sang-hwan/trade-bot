@@ -5,7 +5,7 @@
   "downsize_retries": 2,
   "price_cushion_pct": 0.001,
   "fee_cushion_pct": 0.0005,
-  "note": "US small caps: TNDM, CWCO",
+  "note": "Dynamic scanning mode: live/plan_auto.py's scanner determines symbols.",
   "base_currency": "USD",
   "calendar_id": "XNAS",
   "initial_cash": 10000.0,
@@ -47,9 +47,7 @@
         }
       },
       "price_step": {
-        "NASD": 0.01,
-        "NASD:TNDM": 0.01,
-        "NASD:CWCO": 0.01
+        "NASD": 0.01
       },
       "fills_params": {
         "CANO": "${KIS_CANO}",
@@ -64,19 +62,5 @@
   "fee": {
     "commission_rate": 0.0005,
     "tax_rate_sell": 0.0
-  },
-  "assets": [
-    {
-      "symbol": "NASD:TNDM",
-      "currency": "USD",
-      "lot_step": 1,
-      "price_step": 0.01
-    },
-    {
-      "symbol": "NASD:CWCO",
-      "currency": "USD",
-      "lot_step": 1,
-      "price_step": 0.01
-    }
-  ]
+  }
 }

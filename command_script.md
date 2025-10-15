@@ -1,80 +1,128 @@
 ```powershell
-# ---------- # 섹션: 가상환경
-# 스크립트 실행 전, 가상환경 활성화 및 requirements.txt 설치가 필요합니다.
-.\.venv\Scripts\Activate.ps1
+# ========================================================== #
+#           자동매매 시스템 통합 제어 스크립트           #
+# ========================================================== #
+# 각 섹션은 독립적으로 실행될 수 있도록 구성되었습니다.
+# 전체 스크립트를 실행하면 모든 백테스트 후 실매매 여부를 묻습니다.
+# ========================================================== #
 
-# ---------- # 섹션: 공통 변수
-$START_DATE = '2018-01-01' # 백테스트 시작일 (UTC)
-$END_DATE   = '2025-09-30' # 백테스트 종료일 (UTC)
+# ---------------------------------------------------------- #
+#                    섹션 1: 가상환경 관리                   #
+# ---------------------------------------------------------- #
+# 아래 명령어들은 최초 1회 또는 필요시에만 터미널에서 직접 실행합니다.
 
-# ---------- # 섹션: 유틸리티 함수
-# backtest.py 실행 및 오류 시 중단
-function Invoke-Backtest {
-    param([string[]]$ArgList)
-    & python .\backtest.py @ArgList; if ($LASTEXITCODE -ne 0) { throw "백테스트 실패 (종료 코드: $LASTEXITCODE)" }
+# 1-1. 가상환경 생성 (최초 1회):
+# python -m venv .venv
+
+# 1-2. 가상환경 활성화 (스크립트 실행 전 항상 필요):
+# .\.venv\Scripts\Activate.ps1
+
+# 1-3. 필요 라이브러리 설치 (최초 또는 라이브러리 추가 시):
+# pip install -r requirements.txt
+
+# 1-4. 가상환경 종료 (모든 작업 완료 후):
+# deactivate
+
+
+# ---------------------------------------------------------- #
+#                  공통 설정 및 유틸리티 함수                 #
+# ---------------------------------------------------------- #
+$START_DATE = '2018-01-01'
+$END_DATE   = '2025-09-30'
+function Invoke-Backtest { param([string[]]$ArgList) ; & python .\backtest.py @ArgList; if ($LASTEXITCODE -ne 0) { throw "백테스트 실패" } }
+function Invoke-Validate { param([string]$RunDir) ; & python .\validate.py $RunDir; if ($LASTEXITCODE -ne 0) { throw "검증 실패: $RunDir" } }
+
+
+# ---------------------------------------------------------- #
+#         섹션 2: 대형주 - 우상향 (AAPL) 백테스트 및 검증         #
+# ---------------------------------------------------------- #
+Write-Host ">> [AAPL 백테스트 및 검증] 시작..."
+$RUN_DIR_AAPL = '.\runs\large_up_AAPL'
+Invoke-Backtest -ArgList @('--symbol', 'AAPL', '--out_dir', $RUN_DIR_AAPL, '--source', 'yahoo', '--start', $START_DATE, '--end', $END_DATE, '--snapshot', '--calendar_id', 'XNAS')
+Invoke-Validate -RunDir $RUN_DIR_AAPL
+Write-Host ">> [AAPL 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_AAPL"
+
+
+# ---------------------------------------------------------- #
+#         섹션 3: 대형주 - 우하향 (INTC) 백테스트 및 검증         #
+# ---------------------------------------------------------- #
+Write-Host "`n>> [INTC 백테스트 및 검증] 시작..."
+$RUN_DIR_INTC = '.\runs\large_down_INTC'
+Invoke-Backtest -ArgList @('--symbol', 'INTC', '--out_dir', $RUN_DIR_INTC, '--source', 'yahoo', '--start', $START_DATE, '--end', $END_DATE, '--snapshot', '--calendar_id', 'XNAS')
+Invoke-Validate -RunDir $RUN_DIR_INTC
+Write-Host ">> [INTC 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_INTC"
+
+
+# ---------------------------------------------------------- #
+#          섹션 4: 대형주 - 박스권 (KO) 백테스트 및 검증          #
+# ---------------------------------------------------------- #
+Write-Host "`n>> [KO 백테스트 및 검증] 시작..."
+$RUN_DIR_KO = '.\runs\large_sideways_KO'
+Invoke-Backtest -ArgList @('--symbol', 'KO', '--out_dir', $RUN_DIR_KO, '--source', 'yahoo', '--start', $START_DATE, '--end', $END_DATE, '--snapshot', '--calendar_id', 'XNYS')
+Invoke-Validate -RunDir $RUN_DIR_KO
+Write-Host ">> [KO 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_KO"
+
+
+# ---------------------------------------------------------- #
+#         섹션 5: 소형주 - 우상향 (ENPH) 백테스트 및 검증         #
+# ---------------------------------------------------------- #
+Write-Host "`n>> [ENPH 백테스트 및 검증] 시작..."
+$RUN_DIR_ENPH = '.\runs\small_up_ENPH'
+Invoke-Backtest -ArgList @('--symbol', 'ENPH', '--out_dir', $RUN_DIR_ENPH, '--source', 'yahoo', '--start', $START_DATE, '--end', $END_DATE, '--snapshot', '--calendar_id', 'XNAS')
+Invoke-Validate -RunDir $RUN_DIR_ENPH
+Write-Host ">> [ENPH 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_ENPH"
+
+
+# ---------------------------------------------------------- #
+#         섹션 6: 소형주 - 우하향 (GPRO) 백테스트 및 검증         #
+# ---------------------------------------------------------- #
+Write-Host "`n>> [GPRO 백테스트 및 검증] 시작..."
+$RUN_DIR_GPRO = '.\runs\small_down_GPRO'
+Invoke-Backtest -ArgList @('--symbol', 'GPRO', '--out_dir', $RUN_DIR_GPRO, '--source', 'yahoo', '--start', $START_DATE, '--end', $END_DATE, '--snapshot', '--calendar_id', 'XNAS')
+Invoke-Validate -RunDir $RUN_DIR_GPRO
+Write-Host ">> [GPRO 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_GPRO"
+
+
+# ---------------------------------------------------------- #
+#         섹션 7: 소형주 - 박스권 (SIRI) 백테스트 및 검증         #
+# ---------------------------------------------------------- #
+Write-Host "`n>> [SIRI 백테스트 및 검증] 시작..."
+$RUN_DIR_SIRI = '.\runs\small_sideways_SIRI'
+Invoke-Backtest -ArgList @('--symbol', 'SIRI', '--out_dir', $RUN_DIR_SIRI, '--source', 'yahoo', '--start', $START_DATE, '--end', $END_DATE, '--snapshot', '--calendar_id', 'XNAS')
+Invoke-Validate -RunDir $RUN_DIR_SIRI
+Write-Host ">> [SIRI 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_SIRI"
+
+
+# ---------------------------------------------------------- #
+#                  섹션 8: 실시간 자동매매 실행                 #
+# ---------------------------------------------------------- #
+Write-Host "`n"
+$confirmation = Read-Host ">> 모든 백테스트가 완료되었습니다. 실시간 자동매매를 시작하시겠습니까? (y/n)"
+
+if ($confirmation -eq 'y') {
+    Write-Host ">> [실시간 자동매매] 시작..."
+    
+    if (-not (Test-Path -Path ".\.env")) {
+        throw ".env 파일이 없습니다. API 키와 계좌 정보를 설정해주세요."
+    }
+
+    $TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
+    $LIVE_RUN_DIR = ".\runs\live_run_dynamic_$TIMESTAMP"
+    Write-Host ">> [실시간 자동매매] 결과 저장 경로: $LIVE_RUN_DIR"
+
+    & python .\run_live.py @(
+        '--config',   '.\config.live.json', '--out', $LIVE_RUN_DIR,
+        '--source',   'yahoo', '--interval', '1d', '--market', 'NASD',
+        '--plan-out', "$LIVE_RUN_DIR\plan",
+        '--collect-fills', '--fills-out', "$LIVE_RUN_DIR\fills.jsonl",
+        '--loop'
+    )
+
+    if ($LASTEXITCODE -ne 0) { throw "실매매 봇 실행 중 오류 발생" }
+    
+    Write-Host ">> [실시간 자동매매] 정상 종료."
+
+} else {
+    Write-Host ">> 실매매를 시작하지 않고 스크립트를 종료합니다."
 }
-# validate.py 실행 및 오류 시 중단
-function Invoke-Validate {
-    param([Parameter(Mandatory=$true)][string]$RunDir)
-    & python .\validate.py $RunDir; if ($LASTEXITCODE -ne 0) { throw "검증 실패: $RunDir (종료 코드: $LASTEXITCODE)" }
-}
-
-# ---------- # 섹션: AAPL 백테스트 (대형주)
-Write-Host ">> (1/3) AAPL 백테스트 및 검증 시작..."
-$AAPL_RUN_DIR = '.\runs\AAPL_backtest_run' # 결과물 저장 디렉터리
-
-$ArgsAAPL = @(
-  # --- 데이터 및 기간 ---
-  '--source',        'yahoo',         # 데이터 소스 ('yahoo' or 'upbit')
-  '--symbol',        'AAPL',          # 백테스트 대상 심볼
-  '--start',         $START_DATE,     # 시뮬레이션 시작일 (UTC)
-  '--end',           $END_DATE,       # 시뮬레이션 종료일 (UTC)
-  '--interval',      '1d',            # 데이터 시간 주기 (일봉)
-  # --- 전략 핵심 파라미터 ---
-  '--N',             '20',            # 돈치안 채널 기간 (스탑/사이징용)
-  '--f',             '0.02',          # 거래당 리스크 비율 (자본의 2%)
-  '--epsilon',       '0.0',           # SMA 교차 신호의 최소 이격 조건
-  # --- 거래 환경 및 비용 ---
-  '--initial_equity',  '1000000',     # 초기 자본금
-  '--commission_rate', '0.001',       # 거래 수수료 (0.1%)
-  '--slip',            '0.0005',      # 슬리피지 (0.05%)
-  # --- 자산 및 주문 단위 ---
-  '--lot_step',        '1',           # 최소 주문 수량 (1주)
-  '--price_step',      '0.01',        # 최소 가격 단위 ($0.01)
-  '--base_currency',   'USD',         # 기준 통화
-  '--calendar_id',     'XNAS',        # 거래일 캘린더 (나스닥)
-  # --- 출력 및 기타 ---
-  '--snapshot',                      # 데이터 스냅샷 생성 플래그
-  '--out_dir',         $AAPL_RUN_DIR # 결과물 저장 경로
-)
-Invoke-Backtest -ArgList $ArgsAAPL
-Invoke-Validate -RunDir $AAPL_RUN_DIR
-Write-Host ">> (1/3) AAPL 완료. 결과 확인: $AAPL_RUN_DIR"
-
-# ---------- # 섹션: SIRI 백테스트 (박스권 소형주)
-Write-Host ">> (2/3) SIRI 백테스트 및 검증 시작..."
-$SIRI_RUN_DIR = '.\runs\SIRI_backtest_run' # 결과물 저장 디렉터리
-
-$ArgsSIRI = $ArgsAAPL.Clone() # AAPL 인자 복사 후 일부만 수정
-$ArgsSIRI[3] = 'SIRI'          # --symbol 인자 변경
-$ArgsSIRI[32] = $SIRI_RUN_DIR  # --out_dir 인자 변경
-
-Invoke-Backtest -ArgList $ArgsSIRI
-Invoke-Validate -RunDir $SIRI_RUN_DIR
-Write-Host ">> (2/3) SIRI 완료. 결과 확인: $SIRI_RUN_DIR"
-
-# ---------- # 섹션: GPRO 백테스트 (하향 소형주)
-Write-Host ">> (3/3) GPRO 백테스트 및 검증 시작..."
-$GPRO_RUN_DIR = '.\runs\GPRO_backtest_run' # 결과물 저장 디렉터리
-
-$ArgsGPRO = $ArgsAAPL.Clone() # AAPL 인자 복사 후 일부만 수정
-$ArgsGPRO[3] = 'GPRO'          # --symbol 인자 변경
-$ArgsGPRO[32] = $GPRO_RUN_DIR  # --out_dir 인자 변경
-
-Invoke-Backtest -ArgList $ArgsGPRO
-Invoke-Validate -RunDir $GPRO_RUN_DIR
-Write-Host ">> (3/3) GPRO 완료. 결과 확인: $GPRO_RUN_DIR"
-
-# ---------- # 섹션: 종료
-deactivate
 ```
