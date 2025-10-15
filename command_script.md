@@ -145,4 +145,18 @@ if ($confirmation -eq 'y') {
 } else {
   Write-Host ">> 실매매를 시작하지 않고 스크립트를 종료합니다."
 }
+
+# ---------------------------------------------------------- #
+#            섹션 9: 모니터링 - 매매 로그 시각화 뷰어         #
+# ---------------------------------------------------------- #
+Write-Host "`n>> [모니터링] Trade Log Viewer 실행..."
+
+# runs 루트 경로 지정 (필요시 변경)
+$env:RUNS_ROOT = (Resolve-Path ".\runs").Path
+
+# 가상환경이 활성화되어 있어야 함 (상단 섹션 1-2 참고)
+# 포트는 필요시 변경 가능 (기본 8501)
+python -m streamlit run .\monitoring\trade_log_viewer.py --server.port 8501 --server.address 0.0.0.0
+
+if ($LASTEXITCODE -ne 0) { throw "Trade Log Viewer 실행 중 오류 발생" }
 ```
