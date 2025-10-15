@@ -1,19 +1,28 @@
 {
+  "note": "AUTO plan + multi-broker routing. Universe-driven scanning (US equities via NASDAQ dir, crypto via Upbit KRW). KIS+Upbit side-by-side with audit fields in outputs.",
   "two_stage": true,
   "reserve_pct": 0.01,
-  "alloc_mode": "proportional",
+  "alloc_mode": "proportional_per_broker",
   "downsize_retries": 2,
   "price_cushion_pct": 0.001,
   "fee_cushion_pct": 0.0005,
-  "note": "Dynamic scanning mode: live/plan_auto.py's scanner determines symbols.",
+
   "base_currency": "USD",
   "calendar_id": "XNAS",
+  "open_ts_utc": "1970-01-01T00:00:00Z",
+
   "initial_cash": 10000.0,
   "commission_rate": 0.0005,
   "tax_rate": 0.0,
+
   "lot_step": 1,
   "price_step": 0.01,
-  "tif": "OPG",
+  "lot_step_upbit": 0.0001,
+
+  "signals": {
+    "crypto_daily_anchor_kst": "09:00"
+  },
+
   "engine": {
     "N": 20,
     "f": 0.02,
@@ -22,6 +31,92 @@
     "sma_long": 50,
     "lot_step": 1
   },
+
+  "universe": {
+    "asset_classes": ["us_equity", "crypto"],
+    "filters": {
+      "exclude_halt": true,
+      "trading_status_allow": ["TRADING", "ACTIVE", "LISTED", "READY"]
+    },
+    "us_equity": {
+      "nasdaq_dir": {
+        "nasdaqlisted_url": "https://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+        "otherlisted_url": "https://ftp.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+        "exclude_test_issue": true
+      },
+      "default_tick_size": 0.01,
+      "default_lot_step": 1
+    },
+    "crypto": {
+      "upbit": {
+        "quote_bases": ["KRW"],
+        "min_acc_trade_price_24h_krw": 50000000,
+        "min_order_krw": 5000
+      },
+      "default_lot_step": 0.0001
+    }
+  },
+
+  "broker_kis": {
+    "class": "KisBrokerAdapter",
+    "use_paper": false,
+    "app_key": "${KIS_APP_KEY}",
+    "app_secret": "${KIS_APP_SECRET}",
+    "cano": "${KIS_CANO}",
+    "acnt_prdt_cd": "${KIS_ACNT_PRDT_CD}",
+    "overseas_conf": {
+      "base_url": "https://openapi.koreainvestment.com:9443",
+      "price_path": "/uapi/overseas-price/v1/quotations/price",
+      "order_path": "/uapi/overseas-stock/v1/trading/order",
+      "fills_path": "/uapi/overseas-stock/v1/trading/inquire-ccnl",
+      "tr": {
+        "price": "HHDFS76240000",
+        "buy": {
+          "NASD": "JTTT1002U",
+          "NYSE": "JTTT1002U"
+        },
+        "sell": {
+          "NASD": "JTTT1006U",
+          "NYSE": "JTTT1006U"
+        },
+        "fills": {
+          "NASD": "TTTS3035R",
+          "NYSE": "TTTS3035R"
+        }
+      },
+      "price_step": {
+        "NASD": 0.01,
+        "NYSE": 0.01
+      },
+      "fills_params": {
+        "CANO": "${KIS_CANO}",
+        "ACNT_PRDT_CD": "${KIS_ACNT_PRDT_CD}",
+        "WCRC_FRCR_DVSN_CD": "02",
+        "NATN_CD": "840",
+        "TR_MKET_CD": "01",
+        "INQR_DVSN_CD": "00"
+      }
+    }
+  },
+
+  "broker_upbit": {
+    "class": "UpbitBrokerAdapter",
+    "access_key": "${UPBIT_ACCESS_KEY}",
+    "secret_key": "${UPBIT_SECRET_KEY}",
+    "tick_bands": {
+      "KRW": [
+        [0, 10, 0.01],
+        [10, 100, 0.1],
+        [100, 1000, 1],
+        [1000, 10000, 5],
+        [10000, 100000, 10],
+        [100000, 500000, 50],
+        [500000, 1000000000, 100]
+      ]
+    },
+    "min_order_krw": 5000
+  },
+
   "broker": {
     "class": "KisBrokerAdapter",
     "use_paper": false,
@@ -59,6 +154,7 @@
       }
     }
   },
+
   "fee": {
     "commission_rate": 0.0005,
     "tax_rate_sell": 0.0

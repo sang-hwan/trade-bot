@@ -8,19 +8,28 @@ OHLCV 수집 → UTC DatetimeIndex → 표준 컬럼(open, high, low, close[, vo
 - collect(source, symbol, start=None, end=None, interval='1d', *, base_currency=None, calendar_id=None,
           price_currency=None) -> CollectResult
 
-출력 계약
+(추가) 유니버스/마스터 수집 API
+- list_upbit_markets(quote="KRW") -> pd.DataFrame            # Upbit /v1/market/all
+- fetch_upbit_tickers(markets: list[str]) -> pd.DataFrame    # Upbit /v1/ticker (acc_trade_price_24h 포함)
+- list_us_equities_from_nasdaq_dir() -> pd.DataFrame         # nasdaqlisted.txt + otherlisted.txt 병합(Test Issue 제외)
+
+규약
 - 인덱스: DatetimeIndex(tz='UTC'), 오름차순, 중복 제거
 - 필수 컬럼: open, high, low, close (float)
 - 선택 컬럼: volume (float), AdjClose (주식)
 - 메타: meta={"price_currency": ...}
+
+예외 처리 근거
+- HTTP/네트워크/JSON 오류는 RuntimeError로 승격해 호출자가 원인 메시지를 확인 가능하도록 함.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
+import csv
 import json
 import time
 import urllib.parse
@@ -34,6 +43,9 @@ __all__ = [
     "fetch_yahoo_ohlcv",
     "fetch_upbit_ohlcv",
     "collect",
+    "list_upbit_markets",
+    "fetch_upbit_tickers",
+    "list_us_equities_from_nasdaq_dir",
 ]
 
 
@@ -115,7 +127,39 @@ def _infer_price_currency(source: str, symbol: str) -> str:
     return "USD"
 
 
-# ── 원천별 수집 ────────────────────────────────────────────────────────────────
+def _http_get_json(url: str, *, timeout: int = 10) -> Any:
+    """표준 라이브러리 urllib 기반 JSON GET."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore") if e.fp else ""
+        raise RuntimeError(f"HTTP {e.code} {detail} (url={url})") from None
+    except URLError as e:
+        raise RuntimeError(f"연결 오류: {e.reason} (url={url})") from None
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON 디코드 오류: {e} (url={url})") from None
+
+
+def _http_get_text(url: str, *, timeout: int = 15, encoding: str = "utf-8") -> str:
+    """표준 라이브러리 urllib 기반 텍스트 GET."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                return raw.decode("latin-1")
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore") if e.fp else ""
+        raise RuntimeError(f"HTTP {e.code} {detail} (url={url})") from None
+    except URLError as e:
+        raise RuntimeError(f"연결 오류: {e.reason} (url={url})") from None
+
+
+# ── 원천별 OHLCV 수집 ─────────────────────────────────────────────────────────
 
 def fetch_yahoo_ohlcv(
     symbol: str,
@@ -125,7 +169,7 @@ def fetch_yahoo_ohlcv(
 ) -> pd.DataFrame:
     """Yahoo Finance OHLCV(+AdjClose) → 표준 스키마."""
     try:
-        import yfinance as yf  # 서드파티(선호 X, 필요 시 사용)
+        import yfinance as yf  # 프로젝트 종속성
     except ImportError as e:
         raise RuntimeError("yfinance가 필요합니다. pip install yfinance") from e
 
@@ -134,8 +178,7 @@ def fetch_yahoo_ohlcv(
     if start:
         kwargs["start"] = _as_utc_ts(start).to_pydatetime()
     if end:
-        # yfinance end는 비포함 → 다음날 00:00 보정
-        kwargs["end"] = (_as_utc_ts(end) + pd.Timedelta(days=1)).to_pydatetime()
+        kwargs["end"] = (_as_utc_ts(end) + pd.Timedelta(days=1)).to_pydatetime()  # yfinance end는 비포함
 
     dl = yf.download(
         symbol,
@@ -191,9 +234,9 @@ def fetch_upbit_ohlcv(
     interval: str = "1d",
     *,
     max_rows: int = 200,
-    session=None,  # 유지(호환 목적). 현재 구현은 표준 라이브러리 사용.
+    session=None,  # 호환 목적(미사용)
 ) -> pd.DataFrame:
-    """Upbit Public API(무인증): 일/주/월 봉 → 표준 스키마."""
+    """Upbit Public API(무인증): 일/주/월 봉 → 표준 스키마. 'to'는 KST 문자열, 최신→과거 페이징."""
     endpoint_kind = _map_upbit_interval(interval)
     base_url = f"https://api.upbit.com/v1/candles/{endpoint_kind}"
 
@@ -204,7 +247,6 @@ def fetch_upbit_ohlcv(
 
     while True:
         params = {"market": market, "count": max_rows}
-        # Upbit 'to'는 KST 문자열 요구
         to_kst = to_cursor.tz_convert("Asia/Seoul")
         params["to"] = to_kst.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -212,10 +254,9 @@ def fetch_upbit_ohlcv(
         req = urllib.request.Request(url, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                raw = resp.read()
-                data = json.loads(raw.decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8"))
         except HTTPError as e:
-            detail = e.read().decode("utf-8") if e.fp else ""
+            detail = e.read().decode("utf-8", errors="ignore") if e.fp else ""
             raise RuntimeError(f"Upbit HTTP {e.code} {detail}") from None
         except URLError as e:
             raise RuntimeError(f"Upbit 연결 오류: {e.reason}") from None
@@ -240,12 +281,11 @@ def fetch_upbit_ohlcv(
         df = _drop_dup_columns(df)
         frames.append(df)
 
-        # Upbit는 최신→과거 순으로 반환 → min()이 더 과거
-        last_ts = df.index.min()
+        last_ts = df.index.min()  # 최신→과거 반환이므로 min이 더 과거
         if dt_start and last_ts <= dt_start:
             break
         to_cursor = (last_ts - pd.Timedelta(seconds=1)).tz_convert(timezone.utc)
-        time.sleep(0.05)  # rate-limit 보호
+        time.sleep(0.05)  # 레이트리밋 보호
 
     if not frames:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -261,6 +301,161 @@ def fetch_upbit_ohlcv(
     dl = _enforce_ohlc_types(dl)
     dl = _drop_dupes_sort(dl)
     return dl[["open", "high", "low", "close", "volume"]]
+
+
+# ── (추가) 유니버스/마스터 수집 ────────────────────────────────────────────────
+
+def list_upbit_markets(quote: str = "KRW") -> pd.DataFrame:
+    """
+    Upbit 마켓 전수 목록(/v1/market/all?isDetails=true) → KRW-* 필터.
+    반환 컬럼: 가능한 경우 [market, korean_name, english_name, market_warning, market_event]
+    """
+    url = "https://api.upbit.com/v1/market/all?isDetails=true"
+    data = _http_get_json(url)
+    if not isinstance(data, list):
+        return pd.DataFrame(columns=["market", "korean_name", "english_name"])
+
+    df = pd.DataFrame(data)
+    keep_cols = [c for c in ("market", "korean_name", "english_name", "market_warning", "market_event") if c in df.columns]
+    if not keep_cols:
+        keep_cols = ["market"]
+    df = df[keep_cols]
+    df = df[df["market"].str.startswith(f"{quote}-", na=False)]
+    return df.sort_values("market").reset_index(drop=True)
+
+
+def _chunk(seq: List[str], n: int) -> Iterable[List[str]]:
+    for i in range(0, len(seq), n):
+        yield seq[i: i + n]
+
+
+def fetch_upbit_tickers(markets: List[str]) -> pd.DataFrame:
+    """
+    Upbit Ticker 벌크 조회(/v1/ticker?markets=...).
+    반환 컬럼(가능 시): market, trade_price, high_price, low_price, acc_trade_price_24h, acc_trade_volume_24h,
+                       signed_change_price, signed_change_rate, prev_closing_price
+    """
+    if not markets:
+        return pd.DataFrame(columns=[
+            "market", "trade_price", "high_price", "low_price",
+            "acc_trade_price_24h", "acc_trade_volume_24h", "signed_change_rate"
+        ])
+
+    rows: list[pd.DataFrame] = []
+    for group in _chunk([m.strip().upper() for m in markets if m and isinstance(m, str)], 100):
+        q = ",".join(group)
+        url = "https://api.upbit.com/v1/ticker?" + urllib.parse.urlencode({"markets": q})
+        data = _http_get_json(url)
+        if not data:
+            continue
+        df = pd.DataFrame(data)
+        keep = [c for c in (
+            "market", "trade_price", "high_price", "low_price",
+            "acc_trade_price_24h", "acc_trade_volume_24h",
+            "signed_change_price", "signed_change_rate", "prev_closing_price"
+        ) if c in df.columns]
+        df = df[keep]
+        rows.append(df)
+
+    if not rows:
+        return pd.DataFrame(columns=[
+            "market", "trade_price", "high_price", "low_price",
+            "acc_trade_price_24h", "acc_trade_volume_24h", "signed_change_rate"
+        ])
+
+    out = pd.concat(rows, axis=0, ignore_index=True)
+    num_cols = [c for c in (
+        "trade_price", "high_price", "low_price",
+        "acc_trade_price_24h", "acc_trade_volume_24h",
+        "signed_change_price", "signed_change_rate", "prev_closing_price"
+    ) if c in out.columns]
+    for c in num_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
+
+
+def _parse_symbol_dir_text(text: str) -> Tuple[pd.DataFrame, Optional[str]]:
+    """
+    NASDAQ SymbolDirectory 텍스트(| 구분) → DataFrame, 'File Creation Time' 문자열(있을 경우).
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    file_ctime: Optional[str] = None
+    if lines and lines[-1].lower().startswith("file creation time"):
+        file_ctime = lines[-1].split(":", 1)[-1].strip()
+        lines = lines[:-1]
+    if not lines:
+        return pd.DataFrame(), file_ctime
+
+    reader = csv.DictReader(lines, delimiter="|")
+    rows = list(reader)
+    if not rows:
+        return pd.DataFrame(), file_ctime
+    return pd.DataFrame(rows), file_ctime
+
+
+def list_us_equities_from_nasdaq_dir(
+    url_nasdaq: str = "https://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt",
+    url_other: str = "https://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt",
+) -> pd.DataFrame:
+    """
+    NASDAQ 공식 Symbol Directory 병합: nasdaqlisted.txt + otherlisted.txt (Test Issue 제외).
+    반환 컬럼: symbol, security_name, exchange, is_etf, round_lot_size, source_file, file_creation_time
+    """
+    txt1 = _http_get_text(url_nasdaq)
+    txt2 = _http_get_text(url_other)
+
+    df1, ctime1 = _parse_symbol_dir_text(txt1)
+    df2, ctime2 = _parse_symbol_dir_text(txt2)
+
+    std_rows: list[pd.DataFrame] = []
+
+    if not df1.empty:
+        # Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares
+        df1 = df1.rename(columns={
+            "Symbol": "symbol",
+            "Security Name": "security_name",
+            "Round Lot Size": "round_lot_size",
+            "ETF": "ETF",
+            "Test Issue": "Test Issue",
+        })
+        df1["exchange"] = "NASDAQ"
+        if "round_lot_size" in df1.columns:
+            df1["round_lot_size"] = pd.to_numeric(df1["round_lot_size"], errors="coerce")
+        df1["is_etf"] = df1.get("ETF", "").astype(str).upper().eq("Y")
+        df1["test_issue"] = df1.get("Test Issue", "").astype(str).upper().eq("Y")
+        df1["source_file"] = "nasdaqlisted.txt"
+        df1["file_creation_time"] = ctime1
+        std_rows.append(df1[["symbol", "security_name", "exchange", "is_etf", "round_lot_size", "test_issue", "source_file", "file_creation_time"]])
+
+    if not df2.empty:
+        # Symbol|Exchange|Security Name|ETF|Round Lot Size|Test Issue|NASDAQ Symbol
+        df2 = df2.rename(columns={
+            "Symbol": "symbol",
+            "Security Name": "security_name",
+            "Exchange": "exchange",
+            "Round Lot Size": "round_lot_size",
+            "ETF": "ETF",
+            "Test Issue": "Test Issue",
+        })
+        exch_map = {"N": "NYSE", "A": "AMEX", "P": "ARCA", "Z": "BATS"}
+        df2["exchange"] = df2["exchange"].map(lambda x: exch_map.get(str(x).upper(), str(x).upper()))
+        if "round_lot_size" in df2.columns:
+            df2["round_lot_size"] = pd.to_numeric(df2["round_lot_size"], errors="coerce")
+        df2["is_etf"] = df2.get("ETF", "").astype(str).upper().eq("Y")
+        df2["test_issue"] = df2.get("Test Issue", "").astype(str).upper().eq("Y")
+        df2["source_file"] = "otherlisted.txt"
+        df2["file_creation_time"] = ctime2
+        std_rows.append(df2[["symbol", "security_name", "exchange", "is_etf", "round_lot_size", "test_issue", "source_file", "file_creation_time"]])
+
+    if not std_rows:
+        return pd.DataFrame(columns=["symbol", "security_name", "exchange", "is_etf", "round_lot_size", "source_file", "file_creation_time"])
+
+    merged = pd.concat(std_rows, axis=0, ignore_index=True)
+    if "test_issue" in merged.columns:
+        merged = merged[~merged["test_issue"]].drop(columns=["test_issue"])
+    merged = merged.sort_values(["symbol", "source_file"], ascending=[True, True])
+    merged = merged.drop_duplicates(subset=["symbol"], keep="first").reset_index(drop=True)
+    return merged
 
 
 # ── 수집 파사드 ────────────────────────────────────────────────────────────────
@@ -301,7 +496,7 @@ def collect(
     raise ValueError(f"Unsupported source: {source}")
 
 
-# ── CLI (선택) ────────────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse

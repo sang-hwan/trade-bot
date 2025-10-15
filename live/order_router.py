@@ -1,25 +1,34 @@
 # live/order_router.py
 """
-주문 라우터:
-- 스탑 → 신호 → 리밸런싱 순으로 주문 생성·정렬
-- lot_step 규칙 적용, 중복/과도 주문 상쇄·병합
-- 최종 주문 리스트를 반환(시장가/OPG 전제; price_step 라운딩은 상위 계층에서 수행)
+주문 라우터(자산군 불문, 공통 로직)
+
+공개 API
+- apply_cash_budget_proportional(budget, buy_orders, lot_step) -> list[dict]
+- build_orders(RouterInputs, *, default_reason_label="signal") -> list[dict]
+
+규약
+- 스탑 → 신호 → 리밸런싱 순서로 주문 생성·병합·정렬
+- 수량 라운딩은 lot_step(심볼별)만 적용
+- price_step 라운딩은 상위 계층/브로커에서 수행(여기서는 아이템포턴시 키 생성에만 반영)
+- RouterInputs.price_step/lot_step 은 유니버스에서 심볼별 매핑으로 주입
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Mapping
-import math
 import hashlib
+import math
 
-# ---------- 내부 유틸 ----------
+
+# ── 내부 유틸 ────────────────────────────────────────────────────────────────
 
 def _get_step(step_cfg: float | Mapping[str, float], symbol: str) -> float:
-    """심볼별 step 조회(스칼라/맵 지원)."""
+    """심볼별 step 조회(스칼라/맵 지원). 없으면 0.0."""
     if isinstance(step_cfg, Mapping):
         return float(step_cfg.get(symbol, 0.0))
     return float(step_cfg)
+
 
 def _floor_to_step(x: float, step: float) -> float:
     """x를 step 배수로 내림. step<=0이면 x 그대로."""
@@ -27,10 +36,12 @@ def _floor_to_step(x: float, step: float) -> float:
         return x
     return math.floor(x / step) * step
 
+
 def _make_idemp_key(*parts: str) -> str:
     """입력 동일 → 키 동일."""
     raw = "|".join(parts).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
+
 
 def _merge_or_net(orders: list[dict]) -> list[dict]:
     """같은 심볼의 반대 방향은 상쇄, 같은 방향은 병합(수량 기준)."""
@@ -51,6 +62,7 @@ def _merge_or_net(orders: list[dict]) -> list[dict]:
             out.append({"symbol": sym, "side": "sell", "qty": s - b})
     return out
 
+
 def _validate_reason(reason: str) -> str:
     r = reason.lower()
     if r not in {"signal", "stop", "rebalance"}:
@@ -58,7 +70,7 @@ def _validate_reason(reason: str) -> str:
     return r
 
 
-# ---------- 예산 비례 배분 ----------
+# ── 예산 비례 배분 ───────────────────────────────────────────────────────────
 
 def apply_cash_budget_proportional(budget: float, buy_orders: list[dict], lot_step: float) -> list[dict]:
     """
@@ -66,8 +78,7 @@ def apply_cash_budget_proportional(budget: float, buy_orders: list[dict], lot_st
       - scale = min(1, budget / Σ cash_need)
       - qty_scaled = floor((requested_qty * scale) / lot_step) * lot_step
       - qty_scaled < lot_step 이면 제거
-    반환 주문에는 'funded_qty', 'downsized_by_cash' 플래그 추가.
-    주의: 'requested_qty'와 'cash_need'가 없으면 'qty'와 'price'로 보수 추정.
+    반환 주문에는 'funded_qty', 'downsized_by_cash' 추가.
     """
     budget = float(budget or 0.0)
     lot = float(lot_step or 0.0)
@@ -78,7 +89,7 @@ def apply_cash_budget_proportional(budget: float, buy_orders: list[dict], lot_st
     total_need = 0.0
     for o in buy_orders:
         rq = float(o.get("requested_qty", o.get("qty", 0.0)) or 0.0)
-        cn = o.get("cash_need", None)
+        cn = o.get("cash_need")
         if cn is None:
             px = float(o.get("price") or 0.0)
             cn = px * rq if px > 0 else 0.0
@@ -93,7 +104,7 @@ def apply_cash_budget_proportional(budget: float, buy_orders: list[dict], lot_st
 
     scale = min(1.0, budget / total_need)
     out: list[dict] = []
-    for o, rq, _cn in needs:
+    for o, rq, _ in needs:
         qty_scaled = math.floor((rq * scale) / lot) * lot
         if qty_scaled < lot:
             continue
@@ -102,12 +113,11 @@ def apply_cash_budget_proportional(budget: float, buy_orders: list[dict], lot_st
         item["downsized_by_cash"] = bool(qty_scaled < rq)
         out.append(item)
 
-    # 동일 우선순위 내 결정성(심볼 사전순)
-    out.sort(key=lambda x: str(x.get("symbol", "")))
+    out.sort(key=lambda x: str(x.get("symbol", "")))  # 결정성 보장
     return out
 
 
-# ---------- 공개 API ----------
+# ── 공개 API ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class RouterInputs:
@@ -116,10 +126,11 @@ class RouterInputs:
     signals: Mapping[str, float | None]                  # 진입 목표 수량(주); None/<=0 무시
     rebal_spec: Mapping[str, Mapping[str, float]]        # {"buy_notional": {...}, "sell_notional": {...}}
     price_map: Mapping[str, float]                       # 리밸 금액→수량 변환용 가격(예상 시가)
-    lot_step: float | Mapping[str, float]
-    price_step: float | Mapping[str, float] = 0.0        # 지정가 정책 사용 시 상위 계층에서 활용
+    lot_step: float | Mapping[str, float]                # 유니버스에서 심볼별 주입(수량 라운딩에 사용)
+    price_step: float | Mapping[str, float] = 0.0        # 유니버스에서 심볼별 주입(키 생성에만 사용)
     open_ts_utc: str = "1970-01-01T00:00:00Z"
-    tif: str = "OPG"                                     # 기본 시장가 at open
+    tif: str = "OPG"                                     # 시장가 at open
+
 
 def build_orders(inp: RouterInputs, *, default_reason_label: str = "signal") -> list[dict]:
     """
@@ -127,6 +138,7 @@ def build_orders(inp: RouterInputs, *, default_reason_label: str = "signal") -> 
     - Stop > Signal 우선순위
     - lot_step 적용(실행 불가 소량 제거)
     - 동일 심볼 상쇄/병합
+    - price_step 라운딩은 수행하지 않음(브로커/상위 계층 처리)
     """
     reason_signal = _validate_reason(default_reason_label)
     positions = dict(inp.positions)
@@ -210,10 +222,12 @@ def build_orders(inp: RouterInputs, *, default_reason_label: str = "signal") -> 
         if str(_o.get("side")) == "sell" and str(_o.get("reason")) not in {"stop", "rebalance"}:
             raise ValueError("invalid sell reason: expected {'stop','rebalance'} but got %r" % _o.get("reason"))
 
-    # 6) 아이템포턴시 키
+    # 6) 아이템포턴시 키(라운딩 규칙 변경 시에도 동일 입력이면 동일 키)
     for o in merged:
         lot = _get_step(inp.lot_step, o["symbol"])
         pstep = _get_step(inp.price_step, o["symbol"])
-        o["idempotency_key"] = _make_idemp_key(o["symbol"], o["side"], o["reason"], inp.open_ts_utc, f"{lot}", f"{pstep}", f"{o['qty']}")
+        o["idempotency_key"] = _make_idemp_key(
+            o["symbol"], o["side"], o["reason"], inp.open_ts_utc, f"{lot}", f"{pstep}", f"{o['qty']}"
+        )
 
     return merged

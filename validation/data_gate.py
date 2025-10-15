@@ -4,6 +4,10 @@ Data/Snapshot Integrity Gate
 
 의도: 입력 스냅샷이 저장 규약을 준수하고(UTC, 표준 메타 포함),
 같은 입력이면 같은 결과가 다시 나오도록 재현성을 보장한다.
+
+추가 검증:
+- meta 필수: asset_class, price_currency, tick_size, lot_step, trading_status
+- 룰: trading_status가 정지/경보(halted/suspended/paused/warning/caution 등)이면 실패 처리
 """
 
 from __future__ import annotations
@@ -11,33 +15,41 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, TypedDict
 
 import pandas as pd
 
 
 class GateResult(TypedDict):
     passed: bool
-    errors: List[str]
-    warnings: List[str]
-    evidence: Dict[str, Any]
+    errors: list[str]
+    warnings: list[str]
+    evidence: dict[str, Any]
 
 
 @dataclass
 class Artifacts:
     """검증에 필요한 산출물 핸들."""
     snapshot_parquet_path: str
-    snapshot_meta: Dict[str, Any]
+    snapshot_meta: dict[str, Any]
 
 
 # 필수 스냅샷 메타 키/타입
-_REQUIRED_SNAPSHOT_FIELDS: Dict[str, tuple[type, ...]] = {
+_NUMBER = (int, float)
+_REQUIRED_SNAPSHOT_FIELDS: dict[str, tuple[type, ...]] = {
+    # 기본 메타
     "source": (str,), "symbol": (str,), "start": (str,), "end": (str,),
     "interval": (str,), "rows": (int,), "columns": (int,),
     "snapshot_path": (str,), "snapshot_sha256": (str,), "collected_at": (str,),
     "timezone": (str,), "base_currency": (str,), "fx_source": (str, type(None)),
     "fx_source_ts": (str, type(None)), "calendar_id": (str,),
     "instrument_registry_hash": (str, type(None)),
+    # 실행/집행 관련 메타(필수)
+    "asset_class": (str,),
+    "price_currency": (str,),
+    "tick_size": _NUMBER,
+    "lot_step": _NUMBER,
+    "trading_status": (str,),
 }
 
 
@@ -50,7 +62,7 @@ def _sha256_of_file(path: str, chunk_size: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def _is_iso8601_utc(s: Optional[str]) -> bool:
+def _is_iso8601_utc(s: str | None) -> bool:
     """문자열이 'Z'로 끝나는 UTC ISO-8601 형식인지 확인한다."""
     if not s:
         return True
@@ -65,11 +77,11 @@ def _is_iso8601_utc(s: Optional[str]) -> bool:
 
 def run(artifacts: Artifacts) -> GateResult:
     """데이터/스냅샷 무결성 게이트의 단일 진입점."""
-    errors: List[str] = []
-    warnings: List[str] = []
-    evidence: Dict[str, Any] = {}
+    errors: list[str] = []
+    warnings: list[str] = []
+    evidence: dict[str, Any] = {}
 
-    # (1/5) snapshot_meta 형식 검증
+    # (1/6) snapshot_meta 형식 검증
     meta = artifacts.snapshot_meta or {}
     for key, types in _REQUIRED_SNAPSHOT_FIELDS.items():
         if key not in meta:
@@ -78,20 +90,27 @@ def run(artifacts: Artifacts) -> GateResult:
             errors.append(f"[meta:type] '{key}' 타입 불일치: {type(meta.get(key)).__name__} != {types}")
 
     for k in ("start", "end", "collected_at", "fx_source_ts"):
-        if k in meta and not _is_iso8601_utc(meta.get(k)):
-            errors.append(f"[meta:iso8601] '{k}'는 UTC(Z) ISO-8601 형식이여야 합니다: {meta.get(k)!r}")
+        if k in meta and not _is_iso8601_utc(meta.get(k)):  # type: ignore[arg-type]
+            errors.append(f"[meta:iso8601] '{k}'는 UTC(Z) ISO-8601 형식이어야 합니다: {meta.get(k)!r}")
 
-    # (2/5) Parquet 파일 로드 및 인덱스 검증
+    # (2/6) 거래상태 정책 검증: 정지/경보 상태는 실패 처리
+    status = str(meta.get("trading_status", "")).strip().lower()
+    halt_like = {"halt", "halted", "suspend", "suspended", "pause", "paused", "stop", "stopped"}
+    warn_like = {"warn", "warning", "caution", "attention"}
+    if status in halt_like or status in warn_like:
+        errors.append(f"[meta:trading_status] 거래 불가 상태('{status}') 스냅샷은 허용되지 않습니다.")
+
+    # (3/6) Parquet 파일 로드 및 인덱스 검증
     pq_path = artifacts.snapshot_parquet_path
     if not os.path.isfile(pq_path):
         errors.append(f"[parquet:missing] 파일 없음: {pq_path}")
-        return GateResult(passed=len(errors) == 0, errors=errors, warnings=warnings, evidence=evidence)
+        return GateResult(passed=False, errors=errors, warnings=warnings, evidence=evidence)
 
     try:
         df = pd.read_parquet(pq_path)
     except Exception as e:
         errors.append(f"[parquet:read] 로드 실패: {pq_path} ({e})")
-        return GateResult(passed=len(errors) == 0, errors=errors, warnings=warnings, evidence=evidence)
+        return GateResult(passed=False, errors=errors, warnings=warnings, evidence=evidence)
 
     if not isinstance(df.index, pd.DatetimeIndex):
         errors.append("[index:type] 인덱스가 DatetimeIndex가 아닙니다.")
@@ -103,7 +122,7 @@ def run(artifacts: Artifacts) -> GateResult:
         if not df.index.is_unique:
             errors.append("[index:dup] 인덱스에 중복된 값이 존재합니다.")
 
-    # (3/5) 메타데이터와 실제 데이터 내용 대조
+    # (4/6) 메타데이터와 실제 데이터 내용 대조
     if not df.empty:
         if meta.get("rows") != df.shape[0]:
             errors.append(f"[meta:rows] 메타({meta.get('rows')})와 실제 행 수({df.shape[0]})가 다릅니다.")
@@ -117,7 +136,7 @@ def run(artifacts: Artifacts) -> GateResult:
         if meta.get("end") != actual_end_str:
             errors.append(f"[meta:end] 메타({meta.get('end')})와 실제 종료 시간({actual_end_str})이 다릅니다.")
 
-    # (4/5) 파일 경로 및 해시 일치 검증
+    # (5/6) 파일 경로 및 해시 일치 검증
     try:
         calculated_sha = _sha256_of_file(pq_path)
         meta_sha = str(meta.get("snapshot_sha256", ""))
@@ -134,11 +153,12 @@ def run(artifacts: Artifacts) -> GateResult:
     elif os.path.basename(meta_path) != os.path.basename(pq_path):
         errors.append(f"[meta:snapshot_path] 파일명 불일치: 메타 경로={meta_path}, 실제 경로={pq_path}")
 
-    # (5/5) 증거 데이터 기록
+    # (6/6) 증거 데이터 기록
     evidence.update({
         "meta_fields_checked": list(_REQUIRED_SNAPSHOT_FIELDS.keys()),
         "parquet_path_actual": pq_path,
         "sha256_calculated": locals().get("calculated_sha"),
+        "trading_status": status,
     })
 
     return GateResult(

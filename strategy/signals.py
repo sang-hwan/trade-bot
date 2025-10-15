@@ -1,20 +1,23 @@
 # strategy/signals.py
 """
-전략/신호 단계: SMA10/50 크로스(롱 온리) 신호 생성.
+전략/신호: SMA10/50 크로스(롱 온리) 신호 생성.
 
-- SSOT: 데이터 정합화·스냅샷·시뮬레이션은 포함하지 않음.
-- 입력 규약: *_adj 컬럼이 있으면 SMA 계산 시 항상 우선 사용(`close_adj` 등).
-- 타이밍 규약:
-  결정(Decision)=Close(t-1) 확정 특징, 집행(Execution)=Open(t)
-  → 반환 시리즈 `signal_next[t]`는 t 시가(Open) 집행 후보를 의미.
+타이밍 규약
+- 결정(Decision)=Close(t-1), 집행(Execution)=Open(t)
+- 반환 Series `signal_next[t]`는 t 시가(Open) 집행 후보를 의미
 
 공개 API
-- sma_cross_long_only(df, *, short=10, long=50, epsilon=0.0, price_col=None) -> pd.Series
-  (name='signal_next', dtype=Int8, 값 {1,0,<NA>})
+- sma_cross_long_only(
+    df, *,
+    short=10, long=50, epsilon=0.0, price_col=None,
+    anchor_time=None, anchor_tz="Asia/Seoul"
+  ) -> pd.Series
+  - anchor_time: 24x7 자산(코인)용 "가상 데일리 경계" 시각("HH:MM"), 연산은 기존 SMA와 동일
 """
 
 from __future__ import annotations
 
+import re
 import pandas as pd
 
 from .features import sma
@@ -40,6 +43,16 @@ def _ensure_nonneg_float(value: float, *, name: str) -> None:
         raise SignalError(f"'{name}' must be ≥ 0, got {value!r}")
 
 
+def _validate_anchor(anchor_time: str | None, anchor_tz: str | None) -> None:
+    """가상 데일리 경계 파라미터 형식 검증."""
+    if anchor_time is None:
+        return
+    if not isinstance(anchor_time, str) or not re.fullmatch(r"\d{2}:\d{2}", anchor_time):
+        raise SignalError(f"'anchor_time' must be 'HH:MM' like '09:00', got {anchor_time!r}")
+    if not anchor_tz or not isinstance(anchor_tz, str):
+        raise SignalError(f"'anchor_tz' must be a non-empty string, got {anchor_tz!r}")
+
+
 def sma_cross_long_only(
     df: pd.DataFrame,
     *,
@@ -47,35 +60,33 @@ def sma_cross_long_only(
     long: int = 50,
     epsilon: float = 0.0,
     price_col: str | None = None,
+    anchor_time: str | None = None,   # 코인용 가상 데일리 경계(예: "09:00")
+    anchor_tz: str = "Asia/Seoul",    # 경계 기준 타임존
 ) -> pd.Series:
     """
-    SMA(short) − SMA(long)와 타이브레이크 ε(≥0)에 기반한 롱 온리 신호를 반환한다.
-
-    정의(타이브레이크):
-
-    $$
-    \\texttt{signal\\_next} =
-    \\begin{cases}
-    1 & \\text{if } \\mathrm{SMA}_{\\text{short}} - \\mathrm{SMA}_{\\text{long}} > \\epsilon \\\\
-    0 & \\text{otherwise}
-    \\end{cases}
-    \\qquad (\\epsilon \\ge 0)
-    $$
-
-    타임라인:
-    판단은 Close(t−1), 집행은 Open(t). `signal_next[t]=1`이면 t 시가 매수 집행 후보.
+    SMA(short) − SMA(long) > ε(ε≥0)이면 1, 아니면 0을 다음 시점에 제안한다.
+    판단은 Close(t−1), 집행은 Open(t).
     """
     _ensure_positive_int(short, name="short")
     _ensure_positive_int(long, name="long")
     _ensure_nonneg_float(epsilon, name="epsilon")
+    _validate_anchor(anchor_time, anchor_tz)
 
-    # 피처 계산(입력 df는 수정하지 않음)
     s_short = sma(df, short, price_col=price_col)
     s_long = sma(df, long, price_col=price_col)
 
-    # diff > ε 판단은 결정 시점(t-1)에 존재해야 하므로, 집행 시점 정렬을 위해 +1 시프트 적용
     diff = s_short - s_long
-    decided = (diff > float(epsilon)).astype("boolean")  # True/False/NA
-    signal_next = decided.shift(1).astype("Int8")  # {1,0,<NA>}
+    decided = (diff > float(epsilon)).astype("boolean")
+    signal_next = decided.shift(1).astype("Int8")
     signal_next.name = "signal_next"
+
+    # 메타(연산 동일, 정보만 제공)
+    signal_next.attrs = {
+        "anchor_time": anchor_time,
+        "anchor_tz": anchor_tz,
+        "short": short,
+        "long": long,
+        "epsilon": float(epsilon),
+        "price_col": price_col,
+    }
     return signal_next

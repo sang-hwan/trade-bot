@@ -4,7 +4,7 @@ KIS(한국투자증권) Open API 실매매 어댑터.
 
 공개 계약
 - place_order(OrderRequest) -> OrderResult
-- cancel_order(order_id, market=None) -> dict   (해외는 TR 설정 필요)
+- cancel_order(order_id, market=None) -> dict
 - fetch_positions() -> dict
 - fetch_cash() -> dict
 - fetch_price(symbol) -> (price: float, raw: dict)
@@ -12,7 +12,14 @@ KIS(한국투자증권) Open API 실매매 어댑터.
 규약
 - UTC ISO-8601("...Z") 가정.
 - 해외는 운영 설정(overseas_conf)로 TR/엔드포인트/틱크기 주입.
+  * 공식 샘플 카테고리 키를 우선 지원:
+    - overseas_price: {"price_path", "tr": {"price": <str|dict by market>}}
+    - overseas_stock: {"order_path","cancel_path","tr":{"buy":{...},"sell":{...},"cancel":{...}}}
+  * (하위호환) 최상위 price_path/order_path/cancel_path, tr.price/buy/sell/cancel 도 인식.
 - 지정가 틱 라운딩은 가능 시 시뮬레이션 규칙 재사용.
+
+예외 처리
+- KIS 응답은 HTTP 200이라도 rt_cd/msg_cd로 거절을 표기 → 표준 BrokerError로 승격.
 """
 
 from __future__ import annotations
@@ -149,8 +156,12 @@ class KisBrokerAdapter(BrokerAdapter):
         )
 
     def cancel_order(self, order_id: str, *, market: Optional[str] = None) -> dict[str, Any]:
-        # 시장/시간대별 TR_ID 상이 → 운영 설정 후 구현
-        raise NotImplementedError("취소/정정: 시장별 TR_ID 설정 후 구현하세요.")
+        """해외주식 취소(정정/취소 TR 자동 스위칭). 국내는 별도 구현."""
+        if not order_id:
+            raise ValueError("order_id required")
+        if market is None:
+            raise BrokerError("해외 취소는 market 코드가 필요합니다(예: 'NASD','NYSE').")
+        return self._cancel_overseas(order_id, market)
 
     def fetch_positions(self) -> dict[str, Any]:
         self._ensure_token()
@@ -225,7 +236,6 @@ class KisBrokerAdapter(BrokerAdapter):
         tr = self._pick_tr(self.TR_BUY_CASH if side == "buy" else self.TR_SELL_CASH)
         headers = self._headers(tr, need_auth=True, with_hashkey=payload)
         raw = self._request_json("POST", self.KRX_ORDER_CASH_PATH, headers, data=payload)
-        # 성공/실패 판정: KIS는 HTTP 200에서도 rt_cd/msg_cd로 거절을 표기
         req_echo = {"side": side, "pdno": pdno, "qty": int(qty), "price": price}
         rt = str(raw.get("rt_cd", "0"))
         if rt not in ("0", "OPERATION", "SUCCESS"):
@@ -240,14 +250,14 @@ class KisBrokerAdapter(BrokerAdapter):
     ) -> OrderResult:
         if market is None:
             raise BrokerError("해외 주문은 market 코드가 필요합니다(예: 'NASD','NYSE').")
-        oc = self.overseas_conf
-        order_path = oc.get("order_path")
-        tr_map = oc.get("tr", {}).get("buy" if side == "buy" else "sell", {})
-        tr_id = tr_map.get(market)
-        if not (order_path and tr_id):
-            raise BrokerError(f"해외 주문 설정 누락: order_path/tr_id for market={market}")
 
-        # 지정가일 때만 틱 라운딩
+        # 엔드포인트/트랜잭션
+        order_path = self._ov_path("overseas_stock", "order_path", default="/uapi/overseas-stock/v1/trading/order")
+        tr_id = self._ov_tr("overseas_stock", "buy" if side == "buy" else "sell", market)
+        if not tr_id:
+            raise BrokerError(f"해외 주문 TR 설정 누락: action={side} market={market}")
+
+        # 지정가 틱 라운딩
         is_market = price is None
         use_price = price
         if (not is_market) and (_sim_round_price is not None):
@@ -277,18 +287,41 @@ class KisBrokerAdapter(BrokerAdapter):
         oid = raw.get("output", {}).get("ODNO") or raw.get("output", {}).get("ORD_NO")
         return OrderResult(ok=True, order_id=oid, raw=raw, request=req_echo)
 
+    def _cancel_overseas(self, order_id: str, market: str) -> dict[str, Any]:
+        """해외 주문 취소(/uapi/overseas-stock/v1/trading/order-rvsecncl)."""
+        cancel_path = self._ov_path("overseas_stock", "cancel_path", default="/uapi/overseas-stock/v1/trading/order-rvsecncl")
+        tr_id = self._ov_tr("overseas_stock", "cancel", market)
+        if not tr_id:
+            raise BrokerError(f"해외 취소 TR 설정 누락: market={market}")
+
+        self._ensure_token()
+        payload = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "OVRS_EXCG_CD": market,
+            "ORGN_ODNO": order_id,
+            "RVSE_CNCL_DVSN_CD": "02",  # 02=취소
+            "ORD_QTY": "0",
+            "OVRS_ORD_UNPR": "0",
+            "ORD_DVSN": "01",
+            "ORD_SVR_DVSN_CD": "0",
+        }
+        headers = self._headers(tr_id, need_auth=True, with_hashkey=payload)
+        raw = self._request_json("POST", cancel_path, headers, data=payload)
+        rt = str(raw.get("rt_cd", "0"))
+        if rt not in ("0", "OPERATION", "SUCCESS"):
+            raise self._normalize_order_error(raw, {"action": "cancel", "order_id": order_id, "market": market})
+        return raw
+
     def _fetch_price_overseas(self, pdno: str, market: Optional[str]) -> tuple[float, dict[str, Any]]:
         """해외 현재가: /uapi/overseas-price/v1/quotations/price (EXCD/SYMB 사용)."""
         if market is None:
             raise BrokerError("해외 시세는 market 코드가 필요합니다.")
 
-        # 기본 경로/트랜잭션 ID(설정에서 덮어쓰기 가능)
-        oc = self.overseas_conf or {}
-        price_path = oc.get("price_path") or "/uapi/overseas-price/v1/quotations/price"
-        default_tr = "HHDFS00000300"  # 해외 현재가(REST)
-        tr_id = oc.get("tr", {}).get("price") or default_tr
+        price_path = self._ov_path("overseas_price", "price_path", default="/uapi/overseas-price/v1/quotations/price")
+        tr_id = self._ov_tr("overseas_price", "price", market) or "HHDFS00000300"
 
-        # 거래소 코드 4→3글자 매핑
+        # 거래소 코드 4→3글자 매핑(가격 계열은 3자리 사용)
         exch_map = {"NASD": "NAS", "NYSE": "NYS", "NAS": "NAS", "NYS": "NYS", "AMEX": "AMEX"}
         excd = exch_map.get(market, market)
 
@@ -297,7 +330,6 @@ class KisBrokerAdapter(BrokerAdapter):
         headers = self._headers(tr_id, need_auth=True)
         data = self._request_json("GET", price_path, headers, params=params)
 
-        # 응답 포맷 호환: 'last' 우선, 없으면 'ovrs_prpr'
         output = data.get("output", {}) if isinstance(data, dict) else {}
         price = float(output.get("last", output.get("ovrs_prpr", 0.0)))
         return price, data
@@ -327,6 +359,44 @@ class KisBrokerAdapter(BrokerAdapter):
             return float(step) if step is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _ov_section(self, section: str) -> dict[str, Any]:
+        """overseas_conf 하위 섹션 접근(공식 샘플 키 우선)."""
+        val = self.overseas_conf.get(section)
+        if isinstance(val, dict):
+            return val
+        return self.overseas_conf  # 하위호환: flat 구조
+
+    def _ov_path(self, section: str, key: str, *, default: str) -> str:
+        sec = self._ov_section(section)
+        path = sec.get(key)
+        if path:
+            return str(path)
+        return str(self.overseas_conf.get(key, default))  # flat 키 하위호환
+
+    def _ov_tr(self, section: str, action: str, market: str) -> Optional[str]:
+        """
+        TR ID 선택:
+        - 섹션(overseas_price/overseas_stock) 내 tr[action]이 문자열이면 그대로 사용
+        - dict이면 tr[action][market] 사용
+        - 없으면 flat tr[action] 또는 tr[action][market] 조회
+        """
+        sec = self._ov_section(section)
+        tr = sec.get("tr", {})
+        if isinstance(tr, dict):
+            v = tr.get(action)
+            if isinstance(v, str):
+                return v
+            if isinstance(v, dict):
+                return v.get(market) or v.get(market.upper())
+        flat_tr = self.overseas_conf.get("tr", {})
+        if isinstance(flat_tr, dict):
+            vv = flat_tr.get(action)
+            if isinstance(vv, str):
+                return vv
+            if isinstance(vv, dict):
+                return vv.get(market) or vv.get(market.upper())
+        return None
 
     def _headers(self, tr_id: str, *, need_auth: bool, with_hashkey: Optional[dict] = None) -> dict[str, str]:
         h = {
