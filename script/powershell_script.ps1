@@ -50,37 +50,37 @@ function Start-Streamlit {
 # ---------------------------------------------------------- #
 if (-not $LiveOnly) {
   Write-Host ">> [AAPL 백테스트 및 검증] 시작..."
-  $RUN_DIR_AAPL = '.\runs\large_up_AAPL'
+  $RUN_DIR_AAPL = '.\backtests\large_up_AAPL'
   Invoke-Backtest -ArgList @('--symbol','AAPL','--out_dir',$RUN_DIR_AAPL,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
   Invoke-Validate -RunDir $RUN_DIR_AAPL
   Write-Host ">> [AAPL 백테스트 및 검증] 완료."
 
   Write-Host "`n>> [INTC 백테스트 및 검증] 시작..."
-  $RUN_DIR_INTC = '.\runs\large_down_INTC'
+  $RUN_DIR_INTC = '.\backtests\large_down_INTC'
   Invoke-Backtest -ArgList @('--symbol','INTC','--out_dir',$RUN_DIR_INTC,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
   Invoke-Validate -RunDir $RUN_DIR_INTC
   Write-Host ">> [INTC 백테스트 및 검증] 완료."
 
   Write-Host "`n>> [KO 백테스트 및 검증] 시작..."
-  $RUN_DIR_KO = '.\runs\large_sideways_KO'
+  $RUN_DIR_KO = '.\backtests\large_sideways_KO'
   Invoke-Backtest -ArgList @('--symbol','KO','--out_dir',$RUN_DIR_KO,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNYS','--price_step','0.01')
   Invoke-Validate -RunDir $RUN_DIR_KO
   Write-Host ">> [KO 백테스트 및 검증] 완료."
 
   Write-Host "`n>> [ENPH 백테스트 및 검증] 시작..."
-  $RUN_DIR_ENPH = '.\runs\small_up_ENPH'
+  $RUN_DIR_ENPH = '.\backtests\small_up_ENPH'
   Invoke-Backtest -ArgList @('--symbol','ENPH','--out_dir',$RUN_DIR_ENPH,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
   Invoke-Validate -RunDir $RUN_DIR_ENPH
   Write-Host ">> [ENPH 백테스트 및 검증] 완료."
 
   Write-Host "`n>> [GPRO 백테스트 및 검증] 시작..."
-  $RUN_DIR_GPRO = '.\runs\small_down_GPRO'
+  $RUN_DIR_GPRO = '.\backtests\small_down_GPRO'
   Invoke-Backtest -ArgList @('--symbol','GPRO','--out_dir',$RUN_DIR_GPRO,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
   Invoke-Validate -RunDir $RUN_DIR_GPRO
   Write-Host ">> [GPRO 백테스트 및 검증] 완료."
 
   Write-Host "`n>> [SIRI 백테스트 및 검증] 시작..."
-  $RUN_DIR_SIRI = '.\runs\small_sideways_SIRI'
+  $RUN_DIR_SIRI = '.\backtests\small_sideways_SIRI'
   Invoke-Backtest -ArgList @('--symbol','SIRI','--out_dir',$RUN_DIR_SIRI,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
   Invoke-Validate -RunDir $RUN_DIR_SIRI
   Write-Host ">> [SIRI 백테스트 및 검증] 완료."

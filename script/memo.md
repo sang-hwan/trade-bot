@@ -1,9 +1,7 @@
 - 모니터링 UX 개선
-  - 폴더 분리
-  > 스크립트의 백테스트 출력 경로를 ./backtests/...로 변경
-  - Trade Log 표시 안 나오는 문제 해결(필수)
+  - Trade Log 표시 안 나오는 문제 해결
   > Trade Log Viewer에 trades.csv fallback 로직 추가 또는 산출물에 trades.jsonl 추가 기록
-  - 윈도우 로그 보존(필수)
+  - 윈도우 로그 보존
   > PowerShell: 실매매 프로세스 시작 시 표준출력/에러를 live_bot.log로 리다이렉트.
   > 이러면 PID 사라질 때도 로그로 사유 파악 용이
   - plan/ 폴더 정책 결정

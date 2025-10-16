@@ -43,27 +43,27 @@ start_streamlit() {
 # ---------------------------------------------------------- #
 #         섹션 2~7: 각종 자산 백테스트 및 검증 실행          #
 # ---------------------------------------------------------- #
-RUN_DIR_AAPL='./runs/large_up_AAPL'
+RUN_DIR_AAPL='./backtests/large_up_AAPL'
 invoke_backtest --symbol 'AAPL' --out_dir "$RUN_DIR_AAPL" --source 'yahoo' --start "$START_DATE" --end "$END_DATE" --snapshot --calendar_id 'XNAS' --price_step '0.01'
 invoke_validate "$RUN_DIR_AAPL"
 
-RUN_DIR_INTC='./runs/large_down_INTC'
+RUN_DIR_INTC='./backtests/large_down_INTC'
 invoke_backtest --symbol 'INTC' --out_dir "$RUN_DIR_INTC" --source 'yahoo' --start "$START_DATE" --end "$END_DATE" --snapshot --calendar_id 'XNAS' --price_step '0.01'
 invoke_validate "$RUN_DIR_INTC"
 
-RUN_DIR_KO='./runs/large_sideways_KO'
+RUN_DIR_KO='./backtests/large_sideways_KO'
 invoke_backtest --symbol 'KO' --out_dir "$RUN_DIR_KO" --source 'yahoo' --start "$START_DATE" --end "$END_DATE" --snapshot --calendar_id 'XNYS' --price_step '0.01'
 invoke_validate "$RUN_DIR_KO"
 
-RUN_DIR_ENPH='./runs/small_up_ENPH'
+RUN_DIR_ENPH='./backtests/small_up_ENPH'
 invoke_backtest --symbol 'ENPH' --out_dir "$RUN_DIR_ENPH" --source 'yahoo' --start "$START_DATE" --end "$END_DATE" --snapshot --calendar_id 'XNAS' --price_step '0.01'
 invoke_validate "$RUN_DIR_ENPH"
 
-RUN_DIR_GPRO='./runs/small_down_GPRO'
+RUN_DIR_GPRO='./backtests/small_down_GPRO'
 invoke_backtest --symbol 'GPRO' --out_dir "$RUN_DIR_GPRO" --source 'yahoo' --start "$START_DATE" --end "$END_DATE" --snapshot --calendar_id 'XNAS' --price_step '0.01'
 invoke_validate "$RUN_DIR_GPRO"
 
-RUN_DIR_SIRI='./runs/small_sideways_SIRI'
+RUN_DIR_SIRI='./backtests/small_sideways_SIRI'
 invoke_backtest --symbol 'SIRI' --out_dir "$RUN_DIR_SIRI" --source 'yahoo' --start "$START_DATE" --end "$END_DATE" --snapshot --calendar_id 'XNAS' --price_step '0.01'
 invoke_validate "$RUN_DIR_SIRI"
 

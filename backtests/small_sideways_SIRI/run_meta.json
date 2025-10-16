@@ -1,0 +1,60 @@
+{
+  "engine_mode": "portfolio-plan-driven",
+  "initial_equity": 1000000.0,
+  "price_columns_used": {
+    "open": "open_adj",
+    "close": "close_adj"
+  },
+  "base_currency": "USD",
+  "cash_flow_source": null,
+  "target_weights_source": null,
+  "instrument_registry_hash": null,
+  "params": {
+    "lot_step": 1.0,
+    "price_step": 0.01,
+    "commission_rate": 0.0005,
+    "slip": 0.0005,
+    "N": 20,
+    "f": 0.02,
+    "epsilon": 0.0,
+    "sma_short": 10,
+    "sma_long": 50
+  },
+  "snapshot": {
+    "source": "yahoo",
+    "symbol": "SIRI",
+    "start": "2018-01-02T00:00:00Z",
+    "end": "2025-09-30T00:00:00Z",
+    "interval": "1d",
+    "rows": 1947,
+    "columns": 10,
+    "snapshot_path": "C:\\work_space_private\\trade-bot\\backtests\\small_sideways_SIRI\\yahoo_SIRI_1d_20250930000000Z.parquet",
+    "snapshot_sha256": "1a4f6022b289ec54892510e7f8d3abb3f968827ef19b107435ece4129ba1c140",
+    "collected_at": "2025-10-16T09:04:14Z",
+    "timezone": "UTC",
+    "column_names": [
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "AdjClose",
+      "open_adj",
+      "high_adj",
+      "low_adj",
+      "close_adj"
+    ],
+    "requested_start": "2018-01-01",
+    "requested_end": "2025-09-30",
+    "base_currency": "USD",
+    "fx_source": null,
+    "fx_source_ts": null,
+    "calendar_id": "XNAS",
+    "instrument_registry_hash": null,
+    "asset_class": "equity_us",
+    "price_currency": "USD",
+    "tick_size": 0.01,
+    "lot_step": 1.0,
+    "trading_status": "active"
+  }
+}
