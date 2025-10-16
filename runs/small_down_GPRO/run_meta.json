@@ -30,7 +30,7 @@
     "columns": 10,
     "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\small_down_GPRO\\yahoo_GPRO_1d_20250930000000Z.parquet",
     "snapshot_sha256": "db7eabbc374253b4892fe5b1f067c0210a907252ff0b1c463f8ef4f3b508c41e",
-    "collected_at": "2025-10-16T00:53:48Z",
+    "collected_at": "2025-10-16T07:44:14Z",
     "timezone": "UTC",
     "column_names": [
       "open",

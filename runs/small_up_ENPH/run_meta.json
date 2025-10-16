@@ -30,7 +30,7 @@
     "columns": 10,
     "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\small_up_ENPH\\yahoo_ENPH_1d_20250930000000Z.parquet",
     "snapshot_sha256": "754f6506d589bc8c37247ef4a703fc3983eab405f927efb4166da8805c0654a0",
-    "collected_at": "2025-10-16T00:53:41Z",
+    "collected_at": "2025-10-16T07:44:07Z",
     "timezone": "UTC",
     "column_names": [
       "open",

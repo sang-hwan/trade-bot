@@ -12,3 +12,6 @@ Thumbs.db
 
 # Project artifacts
 .env
+
+# EC2 Key
+*.pem

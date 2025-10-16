@@ -28,7 +28,7 @@
         "trading_status"
       ],
       "parquet_path_actual": "C:\\work_space_private\\trade-bot\\runs\\large_down_INTC\\yahoo_INTC_1d_20250930000000Z.parquet",
-      "sha256_calculated": "906a8358db6efde93103528e01be943ef400ff5edf460f0c2577dd2bbf523e51",
+      "sha256_calculated": "9d916f9398c990badd3e8809d9311de9fc39219b96fe2fcf4c2f316093b6f0e2",
       "trading_status": "active"
     }
   },
@@ -52,7 +52,7 @@
     "errors": [],
     "warnings": [],
     "evidence": {
-      "reconstructed_final_equity": 699161.8177819685,
+      "reconstructed_final_equity": 695658.4586153616,
       "n_trades_validated": 81,
       "params_validated": {
         "lot_step": 1.0,
@@ -80,9 +80,9 @@
         ".\\runs\\large_down_INTC\\validation\\fig_trade_pnl.png"
       ],
       "stats": {
-        "cagr": -0.04516912901329917,
+        "cagr": -0.04578841851146509,
         "win_rate": 0.16049382716049382,
-        "payoff": 1.251481444142421
+        "payoff": 1.24349760263224
       }
     }
   }

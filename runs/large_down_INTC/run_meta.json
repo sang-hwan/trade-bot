@@ -29,8 +29,8 @@
     "rows": 1947,
     "columns": 10,
     "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\large_down_INTC\\yahoo_INTC_1d_20250930000000Z.parquet",
-    "snapshot_sha256": "906a8358db6efde93103528e01be943ef400ff5edf460f0c2577dd2bbf523e51",
-    "collected_at": "2025-10-16T00:53:29Z",
+    "snapshot_sha256": "9d916f9398c990badd3e8809d9311de9fc39219b96fe2fcf4c2f316093b6f0e2",
+    "collected_at": "2025-10-16T07:43:55Z",
     "timezone": "UTC",
     "column_names": [
       "open",

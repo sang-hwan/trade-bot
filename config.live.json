@@ -33,12 +33,12 @@
   },
 
   "universe": {
-    "asset_classes": ["us_equity", "crypto"],
+    "asset_class": ["us", "upbit"],
     "filters": {
       "exclude_halt": true,
       "trading_status_allow": ["TRADING", "ACTIVE", "LISTED", "READY"]
     },
-    "us_equity": {
+    "us": {
       "nasdaq_dir": {
         "nasdaqlisted_url": "https://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
         "otherlisted_url": "https://ftp.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
@@ -47,12 +47,10 @@
       "default_tick_size": 0.01,
       "default_lot_step": 1
     },
-    "crypto": {
-      "upbit": {
-        "quote_bases": ["KRW"],
-        "min_acc_trade_price_24h_krw": 50000000,
-        "min_order_krw": 5000
-      },
+    "upbit": {
+      "quote": "KRW",
+      "min_acc_trade_price_24h_krw": 50000000,
+      "min_order_krw": 5000,
       "default_lot_step": 0.0001
     }
   },

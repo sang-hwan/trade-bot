@@ -28,7 +28,7 @@
         "trading_status"
       ],
       "parquet_path_actual": "C:\\work_space_private\\trade-bot\\runs\\large_up_AAPL\\yahoo_AAPL_1d_20250930000000Z.parquet",
-      "sha256_calculated": "7f2c8292bbc6364ede085460b78a51b4d1599110526d611155e2ee9e05945398",
+      "sha256_calculated": "2b84153b1fb9bef8a21a6974e12da6067da3f122b2aca961265affadfa568cb8",
       "trading_status": "active"
     }
   },
@@ -52,7 +52,7 @@
     "errors": [],
     "warnings": [],
     "evidence": {
-      "reconstructed_final_equity": 2012304.5246262504,
+      "reconstructed_final_equity": 2012244.9534913674,
       "n_trades_validated": 69,
       "params_validated": {
         "lot_step": 1.0,
@@ -80,9 +80,9 @@
         ".\\runs\\large_up_AAPL\\validation\\fig_trade_pnl.png"
       ],
       "stats": {
-        "cagr": 0.09451955143715396,
+        "cagr": 0.09451536656580406,
         "win_rate": 0.2318840579710145,
-        "payoff": 3.127747456073092
+        "payoff": 3.127717637377953
       }
     }
   }

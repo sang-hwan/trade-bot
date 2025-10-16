@@ -7,8 +7,8 @@
   "rows": 1947,
   "columns": 10,
   "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\small_sideways_SIRI\\yahoo_SIRI_1d_20250930000000Z.parquet",
-  "snapshot_sha256": "d2cd7714ce7d1fea091e7a9cb5e094bea6c8761f4feb670b64f592a1b309d71c",
-  "collected_at": "2025-10-16T00:53:53Z",
+  "snapshot_sha256": "e8d1246ffe08756dcd4d2d9babe9a32720522f0afd79a56bb3bd71b710b29db6",
+  "collected_at": "2025-10-16T07:44:20Z",
   "timezone": "UTC",
   "column_names": [
     "open",

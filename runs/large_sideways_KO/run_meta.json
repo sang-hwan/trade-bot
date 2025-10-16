@@ -29,8 +29,8 @@
     "rows": 1947,
     "columns": 10,
     "snapshot_path": "C:\\work_space_private\\trade-bot\\runs\\large_sideways_KO\\yahoo_KO_1d_20250930000000Z.parquet",
-    "snapshot_sha256": "1e9ceae9b534efb972ea5977c83f4b9cb2cc266145b5292063a9744dcd840f2b",
-    "collected_at": "2025-10-16T00:53:35Z",
+    "snapshot_sha256": "715a582bd7ef4e23d1cb6e421c02203bb0c1c435e8a1528ad7bfcf8fd462e49c",
+    "collected_at": "2025-10-16T07:44:01Z",
     "timezone": "UTC",
     "column_names": [
       "open",
