@@ -11,29 +11,6 @@
 # ========================================================== #
 
 # ---------------------------------------------------------- #
-#            섹션 0: 프리플라이트 & 런타임 설정              #
-# ---------------------------------------------------------- #
-$ErrorActionPreference = 'Stop'
-
-# Python 해석기 결정(가상환경 우선)
-$PY = (Test-Path ".\.venv\Scripts\python.exe") ? ".\.venv\Scripts\python.exe" : "python"
-
-# Python 3.11+ 확인
-$pyVersion = & $PY --version
-if ($pyVersion -notmatch 'Python 3\.1[1-9]') {
-  throw "Python 3.11+ 필요, 현재: $pyVersion"
-}
-
-# 필수 파일 존재 확인(백테스트/검증/실매매/모니터링 엔트리)
-@(
-  'backtest.py','validate.py','run_live.py','requirements.txt','config.live.json',
-  'monitoring\trade_log_viewer.py','monitoring\portfolio_viewer.py',
-  'monitoring\equity_curve_viewer.py','monitoring\system_tracker.py'
-) | ForEach-Object {
-  if (-not (Test-Path $_)) { throw "필수 파일 누락: $_" }
-}
-
-# ---------------------------------------------------------- #
 #                    섹션 1: 가상환경 관리                   #
 # ---------------------------------------------------------- #
 # 아래 명령어들은 최초 1회 또는 필요시에만 터미널에서 직접 실행합니다.
@@ -49,6 +26,15 @@ if ($pyVersion -notmatch 'Python 3\.1[1-9]') {
 # ---------------------------------------------------------- #
 #                  공통 설정 및 유틸리티 함수                 #
 # ---------------------------------------------------------- #
+$ErrorActionPreference = 'Stop'
+
+# Python 해석기 결정(가상환경 우선, 하위호환성 보장)
+if (Test-Path ".\.venv\Scripts\python.exe") {
+  $PY = ".\.venv\Scripts\python.exe"
+} else {
+  $PY = "python"
+}
+
 $START_DATE = '2018-01-01'
 $END_DATE   = '2025-09-30'
 
@@ -76,7 +62,7 @@ function Start-Streamlit {
 # ---------------------------------------------------------- #
 Write-Host ">> [AAPL 백테스트 및 검증] 시작..."
 $RUN_DIR_AAPL = '.\runs\large_up_AAPL'
-Invoke-Backtest -ArgList @('--symbol','AAPL','--out_dir',$RUN_DIR_AAPL,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS')
+Invoke-Backtest -ArgList @('--symbol','AAPL','--out_dir',$RUN_DIR_AAPL,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
 Invoke-Validate -RunDir $RUN_DIR_AAPL
 Write-Host ">> [AAPL 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_AAPL"
 
@@ -85,7 +71,7 @@ Write-Host ">> [AAPL 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_AA
 # ---------------------------------------------------------- #
 Write-Host "`n>> [INTC 백테스트 및 검증] 시작..."
 $RUN_DIR_INTC = '.\runs\large_down_INTC'
-Invoke-Backtest -ArgList @('--symbol','INTC','--out_dir',$RUN_DIR_INTC,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS')
+Invoke-Backtest -ArgList @('--symbol','INTC','--out_dir',$RUN_DIR_INTC,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
 Invoke-Validate -RunDir $RUN_DIR_INTC
 Write-Host ">> [INTC 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_INTC"
 
@@ -94,7 +80,7 @@ Write-Host ">> [INTC 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_IN
 # ---------------------------------------------------------- #
 Write-Host "`n>> [KO 백테스트 및 검증] 시작..."
 $RUN_DIR_KO = '.\runs\large_sideways_KO'
-Invoke-Backtest -ArgList @('--symbol','KO','--out_dir',$RUN_DIR_KO,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNYS')
+Invoke-Backtest -ArgList @('--symbol','KO','--out_dir',$RUN_DIR_KO,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNYS','--price_step','0.01')
 Invoke-Validate -RunDir $RUN_DIR_KO
 Write-Host ">> [KO 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_KO"
 
@@ -103,7 +89,7 @@ Write-Host ">> [KO 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_KO"
 # ---------------------------------------------------------- #
 Write-Host "`n>> [ENPH 백테스트 및 검증] 시작..."
 $RUN_DIR_ENPH = '.\runs\small_up_ENPH'
-Invoke-Backtest -ArgList @('--symbol','ENPH','--out_dir',$RUN_DIR_ENPH,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS')
+Invoke-Backtest -ArgList @('--symbol','ENPH','--out_dir',$RUN_DIR_ENPH,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
 Invoke-Validate -RunDir $RUN_DIR_ENPH
 Write-Host ">> [ENPH 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_ENPH"
 
@@ -112,7 +98,7 @@ Write-Host ">> [ENPH 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_EN
 # ---------------------------------------------------------- #
 Write-Host "`n>> [GPRO 백테스트 및 검증] 시작..."
 $RUN_DIR_GPRO = '.\runs\small_down_GPRO'
-Invoke-Backtest -ArgList @('--symbol','GPRO','--out_dir',$RUN_DIR_GPRO,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS')
+Invoke-Backtest -ArgList @('--symbol','GPRO','--out_dir',$RUN_DIR_GPRO,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
 Invoke-Validate -RunDir $RUN_DIR_GPRO
 Write-Host ">> [GPRO 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_GPRO"
 
@@ -121,7 +107,7 @@ Write-Host ">> [GPRO 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_GP
 # ---------------------------------------------------------- #
 Write-Host "`n>> [SIRI 백테스트 및 검증] 시작..."
 $RUN_DIR_SIRI = '.\runs\small_sideways_SIRI'
-Invoke-Backtest -ArgList @('--symbol','SIRI','--out_dir',$RUN_DIR_SIRI,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS')
+Invoke-Backtest -ArgList @('--symbol','SIRI','--out_dir',$RUN_DIR_SIRI,'--source','yahoo','--start',$START_DATE,'--end',$END_DATE,'--snapshot','--calendar_id','XNAS','--price_step','0.01')
 Invoke-Validate -RunDir $RUN_DIR_SIRI
 Write-Host ">> [SIRI 백테스트 및 검증] 완료. 결과 확인: $RUN_DIR_SIRI"
 

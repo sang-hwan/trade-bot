@@ -1,0 +1,17 @@
+{
+  "initial_equity": 1000000.0,
+  "final_equity": 789283.4695435489,
+  "total_return": -0.2107165304564511,
+  "mdd": -0.4636570192237479,
+  "cagr": -0.030099593389324664,
+  "n_trades": 75,
+  "n_realized": 75,
+  "win_rate": 0.06666666666666667,
+  "payoff": 1.160307233842854,
+  "paths": {
+    "equity_png": ".\\runs\\small_down_GPRO\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\small_down_GPRO\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\small_down_GPRO\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\small_down_GPRO\\validation\\fig_trade_pnl.png"
+  }
+}

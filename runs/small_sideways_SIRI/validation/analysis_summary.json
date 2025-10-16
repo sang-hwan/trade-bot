@@ -1,0 +1,17 @@
+{
+  "initial_equity": 1000000.0,
+  "final_equity": 966285.320121155,
+  "total_return": -0.03371467987884502,
+  "mdd": -0.22723590515286174,
+  "cagr": -0.004419716202528345,
+  "n_trades": 81,
+  "n_realized": 81,
+  "win_rate": 0.16049382716049382,
+  "payoff": 1.8630821919853477,
+  "paths": {
+    "equity_png": ".\\runs\\small_sideways_SIRI\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\small_sideways_SIRI\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\small_sideways_SIRI\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\small_sideways_SIRI\\validation\\fig_trade_pnl.png"
+  }
+}

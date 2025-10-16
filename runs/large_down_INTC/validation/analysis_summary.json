@@ -1,0 +1,17 @@
+{
+  "initial_equity": 1000000.0,
+  "final_equity": 699161.8177819685,
+  "total_return": -0.3008381822180315,
+  "mdd": -0.5124174330156203,
+  "cagr": -0.04516912901329917,
+  "n_trades": 81,
+  "n_realized": 81,
+  "win_rate": 0.16049382716049382,
+  "payoff": 1.251481444142421,
+  "paths": {
+    "equity_png": ".\\runs\\large_down_INTC\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\large_down_INTC\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\large_down_INTC\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\large_down_INTC\\validation\\fig_trade_pnl.png"
+  }
+}

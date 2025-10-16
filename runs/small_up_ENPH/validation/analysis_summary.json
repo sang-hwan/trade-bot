@@ -1,0 +1,17 @@
+{
+  "initial_equity": 1000000.0,
+  "final_equity": 2655571.4558649985,
+  "total_return": 1.6555714558649983,
+  "mdd": -0.3560456926925524,
+  "cagr": 0.13444141904304385,
+  "n_trades": 86,
+  "n_realized": 86,
+  "win_rate": 0.19767441860465115,
+  "payoff": 2.997221889524273,
+  "paths": {
+    "equity_png": ".\\runs\\small_up_ENPH\\validation\\fig_equity.png",
+    "drawdown_png": ".\\runs\\small_up_ENPH\\validation\\fig_drawdown.png",
+    "rolling_sharpe_png": ".\\runs\\small_up_ENPH\\validation\\fig_rolling_sharpe.png",
+    "trade_pnl_png": ".\\runs\\small_up_ENPH\\validation\\fig_trade_pnl.png"
+  }
+}
