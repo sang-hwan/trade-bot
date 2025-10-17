@@ -19,14 +19,17 @@ param(
 # ---------------------------------------------------------- #
 $ErrorActionPreference = 'Stop'
 
-if (Test-Path ".\.venv\Scripts\python.exe") {
-  $PY = ".\.venv\Scripts\python.exe"
-} else {
-  $PY = "python"
-}
+# Python 실행기 탐색
+if (Test-Path ".\.venv\Scripts\python.exe") { $PY = ".\.venv\Scripts\python.exe" }
+else { $PY = "python" }
 
+# 기간(백테스트 예시 범위)
 $START_DATE = '2018-01-01'
 $END_DATE   = '2025-09-30'
+
+# Streamlit 전역 설정(온보딩/텔레메트리 비활성 + 헤드리스)
+$env:STREAMLIT_SERVER_HEADLESS = "true"
+$env:STREAMLIT_BROWSER_GATHERUSAGESTATS = "false"
 
 function Invoke-Backtest {
   param([string[]]$ArgList)
@@ -41,8 +44,52 @@ function Invoke-Validate {
 }
 
 function Start-Streamlit {
-  param([string]$AppPath, [int]$Port, [string]$Addr = "0.0.0.0")
-  Start-Process -FilePath $PY -ArgumentList @("-m","streamlit","run",$AppPath,"--server.port",$Port,"--server.address",$Addr) -WindowStyle Hidden -PassThru
+  <#
+    지정 앱을 백그라운드로 실행.
+    - headless/telemetry off (프롬프트 방지)
+    - 표준출력/에러를 로그로 리다이렉션
+  #>
+  param(
+    [Parameter(Mandatory)][string]$AppPath,
+    [Parameter(Mandatory)][int]$Port,
+    [string]$Addr = "0.0.0.0",
+    [string]$LogDir = ".\runs\_streamlit_logs"
+  )
+  $appAbs = (Resolve-Path $AppPath).Path
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  $name = [IO.Path]::GetFileNameWithoutExtension($AppPath)
+  $out  = Join-Path $LogDir "$name.$Port.out.log"
+  $err  = Join-Path $LogDir "$name.$Port.err.log"
+
+  Start-Process -FilePath $PY `
+    -WorkingDirectory $PWD.Path `
+    -ArgumentList @(
+      "-m","streamlit","run",$appAbs,
+      "--server.port",$Port,"--server.address",$Addr,
+      "--server.headless","true",
+      "--browser.gatherUsageStats","false"
+    ) `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $out `
+    -RedirectStandardError $err `
+    -PassThru
+}
+
+function Wait-Listen {
+  <#
+    지정 포트가 LISTEN 상태가 될 때까지 대기(최대 TimeoutSec).
+    반환: $true(열림) / $false(시간초과)
+  #>
+  param(
+    [Parameter(Mandatory)][int]$Port,
+    [int]$TimeoutSec = 20
+  )
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    if (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  return $false
 }
 
 # ---------------------------------------------------------- #
@@ -92,18 +139,13 @@ if (-not $LiveOnly) {
 #                  섹션 8: 실시간 자동매매 실행               #
 # ---------------------------------------------------------- #
 Write-Host "`n"
-if ($LiveOnly) {
-  $confirmation = 'y'
-} else {
-  $confirmation = Read-Host ">> 모든 백테스트가 완료되었습니다. 실시간 자동매매를 시작하시겠습니까? (y/n)"
-}
+if ($LiveOnly) { $confirmation = 'y' }
+else { $confirmation = Read-Host ">> 모든 백테스트가 완료되었습니다. 실시간 자동매매를 시작하시겠습니까? (y/n)" }
 
 # RUNS_ROOT 부트스트랩: 스크립트 기준 리포지토리 루트에 runs/ 보장
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $runs = Join-Path $RepoRoot "runs"
-if (-not (Test-Path -LiteralPath $runs)) {
-  New-Item -ItemType Directory -Path $runs | Out-Null
-}
+if (-not (Test-Path -LiteralPath $runs)) { New-Item -ItemType Directory -Path $runs | Out-Null }
 $env:RUNS_ROOT = $runs
 if (-not $env:SYNC_PROBE_URL) { $env:SYNC_PROBE_URL = "https://www.google.com" }
 
@@ -112,7 +154,7 @@ if ($confirmation -eq 'y') {
   Write-Host ">> [실시간 자동매매] 시작..."
   if (-not (Test-Path -Path ".\.env")) { throw ".env 파일이 없습니다. KIS/Upbit API 키와 계좌 정보를 설정해주세요." }
 
-  $TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
+  $TIMESTAMP   = Get-Date -Format "yyyyMMdd_HHmmss"
   $LIVE_RUN_DIR = Join-Path $env:RUNS_ROOT ("live_run_dynamic_{0}" -f $TIMESTAMP)
   New-Item -ItemType Directory -Force -Path $LIVE_RUN_DIR | Out-Null
   Write-Host ">> [실시간 자동매매] 결과 저장 경로: $LIVE_RUN_DIR"
@@ -151,6 +193,14 @@ Write-Host "   - Portfolio Viewer     : http://localhost:$PORT_PORTFOL"
 Write-Host "   - Equity Curve Viewer  : http://localhost:$PORT_EQUITY"
 Write-Host "   - System Tracker       : http://localhost:$PORT_SYSTEM"
 
-if ($liveProc) {
-  Write-Host ">> 실매매 봇 PID         : $($liveProc.Id)"
+if ($liveProc) { Write-Host ">> 실매매 봇 PID         : $($liveProc.Id)" }
+
+# 초기 레디니스 확인(기동 지연으로 인한 오탐 방지)
+$dashboardPorts = @($PORT_TRADE, $PORT_PORTFOL, $PORT_EQUITY, $PORT_SYSTEM)
+foreach ($p in $dashboardPorts) {
+  if (Wait-Listen -Port $p -TimeoutSec 20) {
+    Write-Host "[READY] 대시보드(Port: $p) 리슨 중입니다." -ForegroundColor Green
+  } else {
+    Write-Host "[WARN] 대시보드(Port: $p)가 제한시간 내 열리지 않았습니다. 로그 확인: .\runs\_streamlit_logs" -ForegroundColor Yellow
+  }
 }
