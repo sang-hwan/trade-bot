@@ -28,9 +28,9 @@
     "interval": "1d",
     "rows": 1947,
     "columns": 10,
-    "snapshot_path": "C:\\work_space_private\\trade-bot\\backtests\\small_up_ENPH\\yahoo_ENPH_1d_20250930000000Z.parquet",
-    "snapshot_sha256": "754f6506d589bc8c37247ef4a703fc3983eab405f927efb4166da8805c0654a0",
-    "collected_at": "2025-10-16T09:04:03Z",
+    "snapshot_path": "C:\\Users\\hi\\Desktop\\APPLICATION\\workspace\\trade-bot\\backtests\\small_up_ENPH\\yahoo_ENPH_1d_20250930000000Z.parquet",
+    "snapshot_sha256": "ef3e1eaf25681878346c638990598fb678680e1070ddf6db9f23573f84093650",
+    "collected_at": "2025-10-17T12:40:50Z",
     "timezone": "UTC",
     "column_names": [
       "open",

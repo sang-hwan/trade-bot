@@ -98,7 +98,13 @@ if ($LiveOnly) {
   $confirmation = Read-Host ">> 모든 백테스트가 완료되었습니다. 실시간 자동매매를 시작하시겠습니까? (y/n)"
 }
 
-$env:RUNS_ROOT = (Resolve-Path ".\runs").Path
+# RUNS_ROOT 부트스트랩: 스크립트 기준 리포지토리 루트에 runs/ 보장
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$runs = Join-Path $RepoRoot "runs"
+if (-not (Test-Path -LiteralPath $runs)) {
+  New-Item -ItemType Directory -Path $runs | Out-Null
+}
+$env:RUNS_ROOT = $runs
 if (-not $env:SYNC_PROBE_URL) { $env:SYNC_PROBE_URL = "https://www.google.com" }
 
 $liveProc = $null
@@ -107,7 +113,7 @@ if ($confirmation -eq 'y') {
   if (-not (Test-Path -Path ".\.env")) { throw ".env 파일이 없습니다. KIS/Upbit API 키와 계좌 정보를 설정해주세요." }
 
   $TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
-  $LIVE_RUN_DIR = ".\runs\live_run_dynamic_$TIMESTAMP"
+  $LIVE_RUN_DIR = Join-Path $env:RUNS_ROOT ("live_run_dynamic_{0}" -f $TIMESTAMP)
   New-Item -ItemType Directory -Force -Path $LIVE_RUN_DIR | Out-Null
   Write-Host ">> [실시간 자동매매] 결과 저장 경로: $LIVE_RUN_DIR"
 

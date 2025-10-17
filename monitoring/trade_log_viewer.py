@@ -1,8 +1,8 @@
 # monitoring/trade_log_viewer.py
 # ------------------------------------------------------------
 # 매매 로그 시각화 대시보드 (Streamlit)
-# - 실시간 trades.jsonl을 읽어 테이블/요약 지표를 표시
-# - 3~10초 자동 새로고침(슬라이더 조절)
+# - 실시간 trades.jsonl을 우선 읽고, 없으면 trades.csv로 폴백
+# - 1~10초 자동 새로고침(슬라이더 조절)
 # 실행 예:
 #   streamlit run monitoring/trade_log_viewer.py --server.port 8501
 #   # 또는 runs 루트를 환경변수로 지정
@@ -18,8 +18,15 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
+# 선택 모듈(없으면 폴백)
+try:
+    from streamlit_autorefresh import st_autorefresh  # type: ignore
+except Exception:
+    st_autorefresh = None  # type: ignore
+
 
 def _list_run_sessions(runs_root: Path) -> list[Path]:
+    """runs/* 하위 세션 디렉터리를 최신 수정순으로 반환."""
     if not runs_root.exists():
         return []
     items = [p for p in runs_root.iterdir() if p.is_dir()]
@@ -28,8 +35,9 @@ def _list_run_sessions(runs_root: Path) -> list[Path]:
 
 
 def _read_jsonl(path: Path, limit: Optional[int] = None) -> list[dict]:
+    """JSON Lines 파일에서 최근 limit행까지 읽어 리스트[dict] 반환."""
     rows: list[dict] = []
-    if not path.exists():
+    if not path or not path.exists():
         return rows
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -39,14 +47,28 @@ def _read_jsonl(path: Path, limit: Optional[int] = None) -> list[dict]:
             try:
                 rows.append(json.loads(s))
             except json.JSONDecodeError:
-                # 깨진 라인은 건너뜀
+                # 실시간 append 중 손상된 라인은 건너뜀
                 continue
     if limit is not None and len(rows) > limit:
         rows = rows[-limit:]
     return rows
 
 
+def _find_file(base: Path, name: str) -> Optional[Path]:
+    """
+    관용 경로 우선순위로 파일 탐색:
+      1) base/name
+      2) base/outputs/name
+      3) base/logs/name
+    """
+    for cand in (base / name, base / "outputs" / name, base / "logs" / name):
+        if cand.exists():
+            return cand
+    return None
+
+
 def _coalesce(*vals):
+    """앞에서부터 None이 아닌 첫 값을 반환."""
     for v in vals:
         if v is not None:
             return v
@@ -54,7 +76,7 @@ def _coalesce(*vals):
 
 
 def _to_local_ts(ts: str, tz: str = "Asia/Seoul") -> str:
-    """UTC 문자열을 로컬표시(YYYY-mm-dd HH:MM:SS)로 변환."""
+    """UTC 문자열을 로컬표시(YYYY-mm-dd HH:MM:SS)로 변환. 실패 시 원본 반환."""
     try:
         s = pd.to_datetime(ts, utc=True)
         s = s.tz_convert(tz)
@@ -67,12 +89,14 @@ def _to_local_ts(ts: str, tz: str = "Asia/Seoul") -> str:
 st.set_page_config(page_title="Trade Log Viewer", layout="wide")
 st.sidebar.title("⚙️ 설정")
 
-# runs 루트: 기본 ./runs, 환경변수 RUNS_ROOT 우선
-runs_root = Path(os.environ.get("RUNS_ROOT", "./runs")).resolve()
+# runs 루트: 기본 ./runs, 환경변수 RUNS_ROOT 우선(없으면 생성)
+runs_root = Path(os.environ.get("RUNS_ROOT", "./runs")).expanduser().resolve()
+runs_root.mkdir(parents=True, exist_ok=True)
 
 # 세션 선택: 쿼리스트링 ?session=... 우선
 qs = st.query_params
-session_qs = qs.get("session") if isinstance(qs.get("session"), str) else None
+qs_session = qs.get("session")
+session_qs = qs_session if isinstance(qs_session, str) else None
 
 sessions = _list_run_sessions(runs_root)
 session_labels = [p.name for p in sessions]
@@ -91,13 +115,9 @@ refresh_ms = st.sidebar.slider("자동 새로고침 (ms)", 1000, 10000, 3000, 50
 max_rows = st.sidebar.slider("표시할 최대 행 수", 50, 5000, 500, 50)
 st.sidebar.caption("환경변수 RUNS_ROOT 로 runs 루트 경로 지정 가능")
 
-# 자동 새로고침 (외부 모듈 없을 때도 동작)
-try:
-    from streamlit_autorefresh import st_autorefresh
+# 자동 새로고침 (선택 모듈 존재 시)
+if st_autorefresh:
     st_autorefresh(interval=refresh_ms, key="trade_log_auto_refresh")
-except Exception:
-    # 내장 타이머가 없으면 건너뜀 (수동 새로고침 가능)
-    pass
 
 # -------------------------- 본문 --------------------------
 st.title("🧾 Trade Log Viewer")
@@ -106,12 +126,27 @@ if not session_dir or not session_dir.exists():
     st.warning("runs/* 세션 폴더를 찾지 못했습니다. RUNS_ROOT 또는 세션을 확인하세요.")
     st.stop()
 
-trades_path = session_dir / "trades.jsonl"
-rows = _read_jsonl(trades_path, limit=max_rows)
+# -------------------------- 입력 소스 선택 --------------------------
+# 1) JSONL 우선: ./, outputs/, logs/ 순으로 탐색
+used_path: Optional[Path] = None
+jl_path = _find_file(session_dir, "trades.jsonl")
+rows = _read_jsonl(jl_path, limit=max_rows) if jl_path else []
 df = pd.DataFrame(rows)
+if not df.empty:
+    used_path = jl_path
+
+# 2) 비어있으면 CSV 폴백
+if df.empty:
+    csv_path = _find_file(session_dir, "trades.csv")
+    if csv_path:
+        try:
+            df = pd.read_csv(csv_path)
+            used_path = csv_path
+        except (OSError, UnicodeDecodeError, ValueError, pd.errors.ParserError):
+            df = pd.DataFrame()
 
 if df.empty:
-    st.info("표시할 거래가 없습니다. (trades.jsonl 비어있음)")
+    st.info("표시할 거래가 없습니다. (trades.jsonl/csv 미존재 또는 비어있음)")
     st.stop()
 
 # 표준 컬럼 정리
@@ -125,8 +160,17 @@ if "qty" in df.columns and "price" in df.columns:
 
 # KPI
 total_trades = len(df)
-buys = int((df.get("side", "") == "buy").sum()) if "side" in df else int((df.get("reason","").str.contains("buy", na=False)).sum())
-sells = int((df.get("side", "") == "sell").sum()) if "side" in df else int((df.get("reason","").str.contains("sell", na=False)).sum())
+if "side" in df.columns:
+    buys = int((df["side"] == "buy").sum())
+    sells = int((df["side"] == "sell").sum())
+elif "reason" in df.columns:
+    # reason 텍스트에서 buy/sell 키워드 추정
+    _reason = df["reason"].astype(str)
+    buys = int(_reason.str.contains("buy", case=False, na=False).sum())
+    sells = int(_reason.str.contains("sell", case=False, na=False).sum())
+else:
+    buys = sells = 0
+
 notional_sum = float(pd.to_numeric(df.get("notional", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
 commission_sum = float(pd.to_numeric(df.get("commission", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
 
@@ -163,8 +207,26 @@ if "ts" in df.columns:
     except Exception:
         df = df.sort_values("ts", ascending=False)
 
-show_cols = [c for c in ["ts_local", "ts", "symbol", "side", "qty", "price", "notional", "commission", "reason", "broker", "tif", "order_id"] if c in df.columns]
+show_cols = [
+    c
+    for c in [
+        "ts_local",
+        "ts",
+        "symbol",
+        "side",
+        "qty",
+        "price",
+        "notional",
+        "commission",
+        "reason",
+        "broker",
+        "tif",
+        "order_id",
+    ]
+    if c in df.columns
+]
+
 st.subheader("실시간 매매 로그")
 st.dataframe(df[show_cols].head(max_rows), use_container_width=True)
 
-st.caption(f"세션: {sel_session} · 경로: {trades_path} · {len(df)}행 표시 중")
+st.caption(f"세션: {sel_session} · 경로: {used_path if used_path else 'N/A'} · {len(df)}행 중 상위 {min(max_rows, len(df))}행 표시")

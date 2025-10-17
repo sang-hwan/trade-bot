@@ -27,8 +27,8 @@
         "lot_step",
         "trading_status"
       ],
-      "parquet_path_actual": "C:\\work_space_private\\trade-bot\\backtests\\large_sideways_KO\\yahoo_KO_1d_20250930000000Z.parquet",
-      "sha256_calculated": "1880550260d9d6844e923d0a2de14160988277d0e0525554d18658e62d90b33d",
+      "parquet_path_actual": "C:\\Users\\hi\\Desktop\\APPLICATION\\workspace\\trade-bot\\backtests\\large_sideways_KO\\yahoo_KO_1d_20250930000000Z.parquet",
+      "sha256_calculated": "3fa42560c8d9de694ff50b895d1161ff328ab3825042f49b8611fd0055cb0ea0",
       "trading_status": "active"
     }
   },
@@ -52,7 +52,7 @@
     "errors": [],
     "warnings": [],
     "evidence": {
-      "reconstructed_final_equity": 1077277.5610850002,
+      "reconstructed_final_equity": 1077278.9848500001,
       "n_trades_validated": 70,
       "params_validated": {
         "lot_step": 1.0,
@@ -80,9 +80,9 @@
         ".\\backtests\\large_sideways_KO\\validation\\fig_trade_pnl.png"
       ],
       "stats": {
-        "cagr": 0.009660274467852004,
+        "cagr": 0.009660446811998291,
         "win_rate": 0.2,
-        "payoff": 1.9754756833197016
+        "payoff": 1.9754859326077927
       }
     }
   }

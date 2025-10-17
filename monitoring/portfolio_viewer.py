@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from collections import deque
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
@@ -38,6 +37,25 @@ try:
     from streamlit_autorefresh import st_autorefresh  # type: ignore
 except Exception:
     st_autorefresh = None  # type: ignore
+
+
+# ============================ 부트스트랩 ============================ #
+def _ensure_runs_root_bootstrap() -> None:
+    """
+    RUNS_ROOT/runs 또는 ./runs 존재 보장(읽기 전용 뷰어 UX 안정화).
+    - RUNS_ROOT 지정 시: RUNS_ROOT/runs 생성
+    - 미지정 시: ./runs 생성
+    생성 실패(OSError)는 치명적 아님(세션 탐색만 수행).
+    """
+    runs_root_env = os.environ.get("RUNS_ROOT", "").strip()
+    try:
+        if runs_root_env:
+            (Path(runs_root_env).expanduser().resolve() / "runs").mkdir(parents=True, exist_ok=True)
+        else:
+            Path("./runs").resolve().mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # 권한/네트워크 드라이브 문제 시에도 뷰어는 계속 진행
+        pass
 
 
 # ============================== 데이터 모델 ============================== #
@@ -387,6 +405,7 @@ def _pick_session(sessions: List[Path]) -> Optional[Path]:
 
 def _sidebar() -> Tuple[Optional[Path], str, int, float, int, bool]:
     st.sidebar.header("⚙️ 설정")
+    _ensure_runs_root_bootstrap()
     sessions = _list_run_sessions()
     session_dir = _pick_session(sessions)
     base_ccy = st.sidebar.selectbox("기준 통화(Base Currency)", ["USD", "KRW"], index=0)

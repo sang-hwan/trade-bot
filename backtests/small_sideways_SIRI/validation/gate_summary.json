@@ -27,8 +27,8 @@
         "lot_step",
         "trading_status"
       ],
-      "parquet_path_actual": "C:\\work_space_private\\trade-bot\\backtests\\small_sideways_SIRI\\yahoo_SIRI_1d_20250930000000Z.parquet",
-      "sha256_calculated": "1a4f6022b289ec54892510e7f8d3abb3f968827ef19b107435ece4129ba1c140",
+      "parquet_path_actual": "C:\\Users\\hi\\Desktop\\APPLICATION\\workspace\\trade-bot\\backtests\\small_sideways_SIRI\\yahoo_SIRI_1d_20250930000000Z.parquet",
+      "sha256_calculated": "7dbe7e1b10db330cd64fdaa97fa92bcaefc688b1c35e9a0455a6db41768b329a",
       "trading_status": "active"
     }
   },
@@ -43,8 +43,8 @@
         "sma_short": 10,
         "sma_long": 50
       },
-      "n_signal_trades_validated": 41,
-      "n_stop_trades_validated": 40
+      "n_signal_trades_validated": 42,
+      "n_stop_trades_validated": 41
     }
   },
   "simulation_gate": {
@@ -52,8 +52,8 @@
     "errors": [],
     "warnings": [],
     "evidence": {
-      "reconstructed_final_equity": 973299.4660685032,
-      "n_trades_validated": 81,
+      "reconstructed_final_equity": 942862.6998157458,
+      "n_trades_validated": 83,
       "params_validated": {
         "lot_step": 1.0,
         "price_step": 0.01,
@@ -80,9 +80,9 @@
         ".\\backtests\\small_sideways_SIRI\\validation\\fig_trade_pnl.png"
       ],
       "stats": {
-        "cagr": -0.003489277246651823,
-        "win_rate": 0.16049382716049382,
-        "payoff": 1.8949613470593887
+        "cagr": -0.007569978789194631,
+        "win_rate": 0.1566265060240964,
+        "payoff": 1.8156466117797805
       }
     }
   }

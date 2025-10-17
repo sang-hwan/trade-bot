@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 
 
 # ── 소형 유틸 ────────────────────────────────────────────────────────────────
@@ -80,6 +81,23 @@ def _expand_env(value):
     return value
 
 
+# ── RUNS_ROOT 보장 ───────────────────────────────────────────────────────────
+def _ensure_runs_root() -> Path:
+    """
+    RUNS_ROOT 디렉터리를 실행 시점에 보장.
+    - 환경변수 RUNS_ROOT가 있으면 그 경로 사용
+    - 없으면 <프로젝트 루트>/runs 사용
+    - 존재하지 않으면 생성(parents=True)
+    """
+    root_env = os.environ.get("RUNS_ROOT", "").strip()
+    base = Path(__file__).resolve().parent
+    path = Path(root_env).expanduser().resolve() if root_env else (base / "runs")
+    if not root_env:
+        os.environ["RUNS_ROOT"] = str(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 # ── 메인 ────────────────────────────────────────────────────────────────────
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -108,6 +126,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--max-runtime", type=int, default=0)
 
     args = p.parse_args(argv)
+
+    # RUNS_ROOT 보장(스크립트 의존 제거)
+    _ensure_runs_root()
 
     # 설정 로드
     _load_env_file(".env")

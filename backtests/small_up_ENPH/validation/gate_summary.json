@@ -27,8 +27,8 @@
         "lot_step",
         "trading_status"
       ],
-      "parquet_path_actual": "C:\\work_space_private\\trade-bot\\backtests\\small_up_ENPH\\yahoo_ENPH_1d_20250930000000Z.parquet",
-      "sha256_calculated": "754f6506d589bc8c37247ef4a703fc3983eab405f927efb4166da8805c0654a0",
+      "parquet_path_actual": "C:\\Users\\hi\\Desktop\\APPLICATION\\workspace\\trade-bot\\backtests\\small_up_ENPH\\yahoo_ENPH_1d_20250930000000Z.parquet",
+      "sha256_calculated": "ef3e1eaf25681878346c638990598fb678680e1070ddf6db9f23573f84093650",
       "trading_status": "active"
     }
   },

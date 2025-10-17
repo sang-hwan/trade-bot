@@ -73,7 +73,9 @@ invoke_validate "$RUN_DIR_SIRI"
 echo ""
 read -p ">> 모든 백테스트가 완료되었습니다. 실시간 자동매매를 시작하시겠습니까? (y/n) " confirmation
 
-export RUNS_ROOT=$(realpath ./runs)
+# RUNS_ROOT 부트스트랩: runs 디렉터리 보장 후 절대경로로 설정
+mkdir -p ./runs
+export RUNS_ROOT="$(cd ./runs && pwd)"
 export SYNC_PROBE_URL="https://www.google.com"
 
 liveProc_pid=""
@@ -82,7 +84,7 @@ if [[ "$confirmation" == "y" || "$confirmation" == "Y" ]]; then
   if [ ! -f ".env" ]; then echo "!! .env 파일이 없습니다." >&2; exit 1; fi
 
   TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-  LIVE_RUN_DIR="./runs/live_run_dynamic_$TIMESTAMP"
+  LIVE_RUN_DIR="$RUNS_ROOT/live_run_dynamic_$TIMESTAMP"
   mkdir -p "$LIVE_RUN_DIR"
   echo ">> [실시간 자동매매] 결과 저장 경로: $LIVE_RUN_DIR"
 

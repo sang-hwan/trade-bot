@@ -6,9 +6,9 @@
   "interval": "1d",
   "rows": 1947,
   "columns": 10,
-  "snapshot_path": "C:\\work_space_private\\trade-bot\\backtests\\small_sideways_SIRI\\yahoo_SIRI_1d_20250930000000Z.parquet",
-  "snapshot_sha256": "1a4f6022b289ec54892510e7f8d3abb3f968827ef19b107435ece4129ba1c140",
-  "collected_at": "2025-10-16T09:04:14Z",
+  "snapshot_path": "C:\\Users\\hi\\Desktop\\APPLICATION\\workspace\\trade-bot\\backtests\\small_sideways_SIRI\\yahoo_SIRI_1d_20250930000000Z.parquet",
+  "snapshot_sha256": "7dbe7e1b10db330cd64fdaa97fa92bcaefc688b1c35e9a0455a6db41768b329a",
+  "collected_at": "2025-10-17T12:40:59Z",
   "timezone": "UTC",
   "column_names": [
     "open",

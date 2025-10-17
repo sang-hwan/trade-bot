@@ -35,6 +35,25 @@ except Exception:
     st_autorefresh = None  # type: ignore
 
 
+# ============================ 부트스트랩 ============================ #
+def _ensure_runs_root_bootstrap() -> None:
+    """
+    RUNS_ROOT/runs 또는 ./runs 존재 보장(읽기 전용 뷰어 UX 안정화).
+    - RUNS_ROOT 지정 시: RUNS_ROOT/runs 생성
+    - 미지정 시: ./runs 생성
+    실패(OSError)는 치명적 아님(세션 탐색만 수행).
+    """
+    runs_root_env = os.environ.get("RUNS_ROOT", "").strip()
+    try:
+        if runs_root_env:
+            (Path(runs_root_env).expanduser().resolve() / "runs").mkdir(parents=True, exist_ok=True)
+        else:
+            Path("./runs").resolve().mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # 권한/네트워크 드라이브 문제 시에도 뷰어는 계속 진행
+        pass
+
+
 # ============================== 공용 유틸 ============================== #
 
 def _get_query_param(name: str) -> str:
@@ -214,6 +233,7 @@ def _pick_session(sessions: List[Path]) -> Optional[Path]:
 
 def _sidebar() -> Tuple[Optional[Path], int, int, float]:
     st.sidebar.header("⚙️ 설정")
+    _ensure_runs_root_bootstrap()
     sessions = _list_run_sessions()
     session_dir = _pick_session(sessions)
     refresh_ms = st.sidebar.slider("자동 새로고침(ms)", min_value=1000, max_value=10000, value=3000, step=500)
